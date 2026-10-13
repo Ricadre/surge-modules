@@ -1,0 +1,18 @@
+#!name=X 信息流广告过滤（实验版）
+#!desc=需 Surge iOS 5.14+、开启重写与 MITM 并信任本机证书。仅在 X API 可解密时过滤推广条目；无法绕过 X App 证书锁定，未经过官方 X App 实机验证。若 X 无法加载，请停用本模块。
+#!version=0.1.0
+#!homepage=https://github.com/Ricadre/surge-modules
+
+# 本地单文件模块，无远程脚本、外发请求或账号凭据。
+# 此文件不是“最新版官方 X App 已验证可用”的去广告方案。
+# MITM 会让 Surge 在本机读取以下 API 主机的 HTTPS 内容。
+# 只改写下列信息流接口；不添加任何分流或域名封锁规则。
+# 只识别明确的 promoted 标记，不按推文文字、认证标识或账号名称过滤。
+# 未覆盖所有广告类型；接口/结构变化以及 iOS 超过 1 MB 的响应可能无法处理。
+# 不要添加 skip-server-cert-verify：它不能解决 App 的证书锁定。
+
+[Body Rewrite]
+http-response-jq ^https://api\.(?:twitter|x)\.com/(?:(?:1\.1/)?graphql/[^/?]+/(?:HomeTimeline|HomeLatestTimeline|HomeTimelineLatest|TweetDetail|SearchTimeline|SearchTimelineQuery)|2/timeline/(?:home|home_latest)\.json)(?:\?|$) 'def is_ad: if type != "object" then false else ((.entryId // .entry_id // "") | if type == "string" then startswith("promoted-") or startswith("promoted_") else false end) or any( [., .content?, .content?.itemContent?, .item?, .item?.itemContent?, .itemContent?, .content?.item?, .content?.item?.content?, .content?.item?.content?.tweet?, .content?.item?.content?.user?, .item?.content?, .item?.content?.tweet?, .item?.content?.user?][] | objects; (.promotedMetadata? != null and .promotedMetadata? != false) or (.promoted_metadata? != null and .promoted_metadata? != false) ) end; def clean_entry: if type == "object" and (.content?.items? | type) == "array" then (.content.items | length) as $before | .content.items |= map(select(is_ad | not)) | if $before > 0 and (.content.items | length) == 0 then empty else . end else . end; def clean_entries: map(select(is_ad | not) | clean_entry); def clean_instruction: if type != "object" then . else (if (.entries? | type) == "array" then .entries |= clean_entries else . end) | (if (.moduleItems? | type) == "array" then .moduleItems |= map(select(is_ad | not)) else . end) | (if (.entry? | type) == "object" then (.entry | select(is_ad | not) | clean_entry) as $entry | .entry = $entry else . end) | (if (.addEntries?.entries? | type) == "array" then .addEntries.entries |= clean_entries else . end) | (if (.replaceEntry?.entry? | type) == "object" then (.replaceEntry.entry | select(is_ad | not) | clean_entry) as $entry | .replaceEntry.entry = $entry else . end) end; walk(if type == "object" and (.instructions? | type) == "array" then .instructions |= map(clean_instruction) else . end)'
+
+[MITM]
+hostname = %APPEND% api.twitter.com, api.x.com

@@ -1,0 +1,6 @@
+* text=auto
+*.sgmodule text eol=lf
+*.jq text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
