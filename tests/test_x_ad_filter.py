@@ -1,16 +1,21 @@
 import copy
 import json
 from pathlib import Path
-import re
 import subprocess
 
 root = Path(__file__).resolve().parent.parent
 module = (root / "modules/X-AdFilter-Experimental.sgmodule").read_text()
-rules = [line for line in module.splitlines() if line.startswith("http-response-jq ")]
-assert len(rules) == 1
-_, url_pattern, quoted_filter = rules[0].split(" ", 2)
-assert quoted_filter.startswith("'") and quoted_filter.endswith("'")
-jq_filter = quoted_filter[1:-1]
+# Regression guard: a normal build must not restore the withdrawn interception.
+active_lines = [line for line in module.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+assert active_lines == [], active_lines
+assert "#!version=0.1.1" in module
+assert "已停用" in module and "不提供去广告功能" in module
+print("PASS published 0.1.1 has no active configuration directives")
+
+# The remaining checks cover historical research logic only, not the published
+# module. Passing them does not demonstrate iPhone or X App compatibility.
+jq_filter = (root / "src/x-ad-filter.jq").read_text()
 
 
 def run(value):
@@ -88,29 +93,4 @@ check("large untouched IDs preserved by local jq", large_id, large_id)
 for value in [None, [], {}, {"errors": [{"code": 32, "message": "Could not authenticate"}]}]:
     check("non-timeline payload preserved", value, value)
 
-matching = [
-    "https://api.twitter.com/graphql/hash/HomeTimeline?variables=example",
-    "https://api.x.com/graphql/hash/HomeLatestTimeline",
-    "https://api.twitter.com/1.1/graphql/hash/TweetDetail?x=1",
-    "https://api.twitter.com/graphql/hash/SearchTimelineQuery",
-    "https://api.x.com/graphql/hash/HomeTimelineLatest",
-    "https://api.twitter.com/2/timeline/home.json?x=1",
-]
-excluded = [
-    "https://api.twitter.com.evil.example/graphql/hash/HomeTimeline",
-    "https://api.twitter.com/graphql/hash/CreateTweet",
-    "https://api.twitter.com/graphql/hash/HomeTimelineOther",
-    "https://api.twitter.com/1.1/dm/inbox_initial_state.json",
-    "https://api.twitter.com/1.1/account/settings.json",
-    "https://api.x.com/graphql/hash/HomeTimeline/extra",
-    "https://video.twimg.com/test.mp4",
-    "https://x.com/i/api/graphql/hash/HomeTimeline",
-]
-for url in matching:
-    assert re.search(url_pattern, url), url
-for url in excluded:
-    assert not re.search(url_pattern, url), url
-assert "script-path" not in module and "skip-server-cert-verify =" not in module
-assert "hostname = %APPEND% api.twitter.com, api.x.com" in module
-print(f"PASS URL scope: {len(matching)} included, {len(excluded)} excluded")
-print("Local synthetic checks only; no Surge/iPhone/X end-to-end test performed.")
+print("Historical JSON checks only; published 0.1.1 performs no ad filtering.")

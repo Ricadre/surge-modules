@@ -1,3 +1,4 @@
+# Historical research only. Not included in published module 0.1.1.
 # Filter only timeline instruction collections. Never scan tweet text or quotes.
 def is_ad:
   if type != "object" then false

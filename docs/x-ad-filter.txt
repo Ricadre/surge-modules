@@ -9,8 +9,4 @@ Surge 重写依赖能解密目标 HTTPS 请求；采用证书锁定的 App 可�
 不建议绕过证书验证或扩大域名解密范围来尝试修复加载问题。
 
 公开资料与实现来源
-https://manual.nssurge.com/http/body-rewrite.html
 https://manual.nssurge.com/http/mitm.html
-https://manual.nssurge.com/profile/host-list.html
-https://manual.nssurge.com/profile/module.html
-https://github.com/5jwoj/Surge/tree/main/X
