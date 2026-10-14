@@ -1,0 +1,59 @@
+高德地图推广过滤（测试版）0.1.0
+
+功能与兼容范围
+过滤已知开屏、首页、搜索和个人主页推广字段，保留未知结构和正常服务。
+具体覆盖范围以本版本模块规则为准，App 接口变化可能影响效果。
+
+安装
+在 Surge 模块页面从 URL 安装：
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule
+需要 Surge iOS 5.14.0+，开启重写和 MITM，安装并完全信任 Surge 证书。
+先停用或删除旧的 Amap AdBlock - Syntax Fix 以及其他高德模块，避免重复处理。
+旧模块此前只执行了停用，尚未完成删除；GitHub 发布不会自动替换手机上的旧模块。
+启用新模块后，彻底退出高德并重新打开；已缓存的推广可能在联网刷新后才变化。
+日常使用不需要开启“捕获流量”，之前调试留下的捕获开关如仍开启，可关闭。
+
+处理范围
+1. 开屏：清空 splash_screen 返回的 data.ad 数组，保留响应中的其他字段。
+2. 首页：在识别到已知功能卡片时，cardList 只保留继续导航、常去地点、登录；
+   mapBizList 只保留车辆位置。没有已知功能卡片或条目结构异常时保留整个列表。
+3. 我的：移除 tipData、memberInfo；识别到 MyOrderCard 后，cardList 只保留订单。
+   footPrintV2、topMixedCard 和其他顶层数据保留。因此顶部足迹区中的推广可能仍在。
+4. 搜索：过滤已知广告标记的联想与结果卡片，清理营销素材、领券浮条、热词推广。
+   两个专门推广接口 new_hotword、tips_adv 返回 HTTP 200 和空 JSON 对象。
+5. 配置：清理有限的开屏、首页运营图层、酒店活动等推广槽位。
+   不删除地图图层、天气、足迹配置，不匹配路线规划、导航播报或订单接口。
+
+精简的代价与限制
+首页和“我的”采用卡片保留列表，其他非广告服务卡片也可能隐藏；不是精确的广告识别。
+未知字段通常保留，但符合已知列表结构、且不在保留列表中的新卡片也会被隐藏。
+以上只描述代码意图，不能替代手机上的地图、搜索和路线测试。
+客户端内置、缓存、加密响应、其他域名或新接口的推广可能仍显示。
+模块只把 m5.amap.com、m5-x.amap.com、info.amap.com 加入 MITM；这是主机级解密，
+同一主机的其他 HTTPS 请求也会经过解密，但仅改写列出的接口。
+Surge iOS 对超过 1 MB 的响应跳过 Body Rewrite；非 JSON 也跳过。
+未使用远程 JS、通配域名封锁、证书校验绕过或上传日志的代码。
+
+建议试用顺序
+先检查首页地图是否加载，再搜索一个地点并预览路线，最后查看“我的”订单/收藏入口。
+不要为了测试开始实际行程。可反馈具体还有广告的页面，以及是否出现空白或功能缺失。
+如需提供截图或日志，请去掉位置、账号、Cookie、令牌及请求中的加密参数。
+
+恢复
+先停用新模块，彻底退出并重开高德。
+若主配置存在手动添加的同名 MITM 条目，应分别检查；不要清空其他 App 所需的配置或证书。
+
+实现与来源
+过滤器独立使用 Surge 内置 jq 实现，构建源为 scripts/build_amap.py。
+参考以下公开项目的接口名称与字段结构，感谢原作者 RuCu6、kelv1n1n、可莉等贡献：
+https://github.com/sooyaaabo/Egern/blob/3224a15e2ec891fc51aa1cf9a31d767046f7b529/Sgmodule/Amap_remove_ads.sgmodule
+https://github.com/mihoyo-typ/KeleeOne/blob/ab6c3182fb2b09bcc34456f496282ec0b8e9217b/Script/Amap_remove_ads.js
+没有加载上述远程脚本，也没有沿用旧模块中混淆的 amap.js。
+官方语法：
+https://manual.nssurge.com/http/body-rewrite.html
+https://manual.nssurge.com/http/map-local.html
+
+本地检查
+python3 scripts/build_amap.py --check
+python3 tests/test_amap_ad_filter.py
+测试数据均为合成数据，不包含手机抓包或个人信息。

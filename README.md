@@ -6,8 +6,17 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
+| 高德地图推广过滤 | 0.1.0 · 测试版，尚未完成实机验证 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | X 信息流广告过滤 | 0.1.1 · 已停用，无过滤功能 | [停用版 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/X-AdFilter-Experimental.sgmodule) |
+
+## 高德地图推广过滤（测试版）
+
+高德模块为手动安装的测试版，覆盖开屏、首页、搜索和个人主页的部分推广。兼容性以接口结构及规则匹配情况为准。
+
+在 Surge 模块页面从 Raw 地址安装，需要 Surge iOS 5.14.0+、重写、MITM 及已信任的证书。先停用或删除旧的 **Amap AdBlock - Syntax Fix** 和其他高德模块，再启用本模块并彻底退出、重开高德。此前旧模块只执行了停用，尚未删除；发布不会自动替换手机上的旧模块。
+
+首页和“我的”采用卡片保留列表，可能同时隐藏部分非广告服务卡片；普通搜索结果、路线接口、订单接口不在拦截范围内，但仍需实机检查正常加载。使用内置 JQ，无远程脚本依赖。详细范围、已知限制、测试方法和含手动 MITM 条目的回退说明见[高德模块说明](docs/amap-ad-filter.txt)。
 
 ## 豆瓣开屏广告过滤
 
@@ -48,23 +57,25 @@ Surge 官方说明[启用 MITM 可能中断采用证书锁定的 App 连接](htt
 ## 目录与维护
 
 ```text
-modules/   远程发布文件（豆瓣开屏模块、X 停用说明）
+modules/   远程发布文件（高德测试版、豆瓣开屏模块、X 停用说明）
 src/       历史过滤逻辑，不进入当前发布文件
-scripts/   生成 X 停用版模块
-tests/    豆瓣规则测试、X 停用检查与历史 JSON 样本测试
+scripts/   生成高德测试版与 X 停用版模块
+tests/    高德/豆瓣规则测试、X 停用检查与历史 JSON 样本测试
 docs/     模块说明
 ```
 
 ```sh
 python3 scripts/build.py
 python3 scripts/build.py --check
+python3 scripts/build_amap.py --check
+python3 tests/test_amap_ad_filter.py
 python3 tests/test_douban_splash.py
 python3 tests/test_x_ad_filter.py
 ```
 
-构建只需 Python 3；规则测试还需 jq 1.7+。构建器只生成 X 停用版，不会将 `src/x-ad-filter.jq` 重新发布为活动规则。X 测试检查该模块不包含任何生效配置行；豆瓣测试检查接口匹配范围、广告列表清空、其他字段保留及未知结构原样通过。
+构建只需 Python 3；规则测试还需 jq 1.7+。`build.py` 只生成 X 停用版，不会将 `src/x-ad-filter.jq` 重新发布为活动规则；`build_amap.py` 生成高德测试版。测试检查 URL 范围、过滤逻辑、保留字段、未知结构兼容及 X 停用状态，不能替代手机验证。
 
-新增模块使用独立文件和说明，保持远程路径稳定；未经目标 App 实机验证的方案，不应在默认安装路径启用 MITM。不要将个人代理配置、Cookie、令牌、证书或私钥放入此公开仓库。
+新增模块使用独立文件和说明，保持远程路径稳定。未实机验证的模块需明确标为测试版，由用户主动选择安装，不自动加入主配置。不要将个人代理配置、Cookie、令牌、证书或私钥放入此公开仓库。
 
 ## 参考
 
