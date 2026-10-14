@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.3. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.4. Credentials are entered by the user; never bundle secrets.
 (function (root) {
 'use strict';
 const MODES = {
@@ -210,43 +210,123 @@ const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,base64Dec
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);
 
+(function (root) {
+'use strict';
+const STALE_MS=90000, RESTART_MS=180000;
+function clean(value,limit=12) {
+  const text=String(value||'').replace(/[\r\n\t\u0000-\u001f]/g,' ').trim();
+  return Array.from(text).length>limit?Array.from(text).slice(0,limit-1).join('')+'…':text;
+}
+function networkInfo(n) {
+  n=n||{};
+  const iface=n.v4&&n.v4.primaryInterface||n.v6&&n.v6.primaryInterface||'';
+  if(/^(pdp_ip|rmnet)/.test(iface))return {kind:'cellular',name:'蜂窝网络'};
+  const ssid=n.wifi&&n.wifi.ssid;
+  if(ssid)return {kind:'wifi',name:String(ssid).replace(/[\r\n\t\u0000-\u001f]/g,' ').trim()};
+  if(n.wifi)return {kind:'wifi',name:''};
+  return {kind:'unknown',name:''};
+}
+function networkText(n) {
+  if(!n)return '网络未记录';
+  if(n.kind==='wifi')return n.name?'Wi-Fi '+clean(n.name):'Wi-Fi 名称不可用';
+  if(n.kind==='cellular')return '蜂窝网络';
+  return '网络名称不可用';
+}
+function dateText(ms) {
+  if(!ms)return '时间未记录';
+  const d=new Date(ms+8*3600000),pad=n=>String(n).padStart(2,'0');
+  return pad(d.getUTCMonth()+1)+'/'+pad(d.getUTCDate())+' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());
+}
+function duration(ms) {
+  const seconds=Math.max(0,Math.floor(ms/1000));
+  return seconds<60?seconds+'秒':Math.floor(seconds/60)+'分'+String(seconds%60).padStart(2,'0')+'秒';
+}
+function lastSuccess(s) {
+  if(s.lastSuccess)return s.lastSuccess;
+  if(s.result&&s.result.selected&&(s.result.verified||s.stage==='完成')) {
+    const r=s.result;
+    return {at:r.publishedAt||r.finishedAt||s.updatedAt,network:s.network||null,mode:s.mode||r.mode,
+      count:r.selected.length,bytes:s.bytes||r.bytes||0,changed:!!r.changed,
+      elapsedMs:(r.finishedAt||s.updatedAt)-(r.startedAt||s.startedAt||s.updatedAt)};
+  }
+  return null;
+}
+function mainContent(s,mode) {
+  const last=lastSuccess(s);
+  if(!last)return '尚无成功记录 · '+(mode==='full'?'完整档':'省流档')+'\n点击开始；进度见下方';
+  return (last.changed?'上次更新 ':'上次核对 ')+dateText(last.at)+' · '+last.count+' 节点\n'
+    +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
+}
+function progressContent(s,now) {
+  if(!s.stage)return '尚未开始\n点击上方面板运行完整优选';
+  const traffic=Math.round((s.bytes||0)/1000000)+' MB';
+  if(s.running) {
+    const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
+    const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','稳定性与双次下载复测':'双次复测','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
+    const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
+    if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
+    if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
+    const percent=s.total?' · '+Math.min(100,Math.floor((s.done||0)/s.total*100))+'%':'';
+    return stage+percent+'\n'+duration(now-(s.startedAt||now))+' · '+traffic+' · '+duration(age)+'前进展';
+  }
+  if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对\n'
+    +duration((s.updatedAt||now)-(s.startedAt||s.result&&s.result.startedAt||s.updatedAt||now))+' · '+traffic+' · 请刷新订阅';
+  return s.stage+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');
+}
+function view(kind,s,now,mode,error) {
+  const progress=kind==='status';
+  const stale=s.running&&now-(s.updatedAt||s.startedAt||now)>=STALE_MS;
+  return {title:progress?'Cloudflare 测速进度':'Cloudflare 一键优选',
+    content:error?'本轮未完成\n'+error:progress?progressContent(s,now):mainContent(s,mode),
+    icon:progress?'chart.bar.fill':'cloud.fill',
+    'icon-color':error||s.stage==='未完成'?'#E05252':stale?'#D98913':'#F48120'};
+}
+const api={STALE_MS,RESTART_MS,networkInfo,networkText,dateText,duration,lastSuccess,view};
+if(typeof module==='object'&&module.exports)module.exports=api;else root.CFPanelUI=api;
+})(typeof globalThis==='object'?globalThis:this);
+
 const CF_RANK_POOLS=["162.159.32.0/20","8.35.211.0/24","8.39.125.0/24","188.164.248.0/24","108.162.198.0/24","162.159.38.0/23","91.193.58.0/23","172.66.0.0/22","104.16.144.0/20","104.16.240.0/20","104.17.16.0/20","104.17.48.0/20","104.17.96.0/20","104.17.112.0/20","104.17.144.0/20","104.17.160.0/20","104.17.176.0/20","104.17.208.0/20","104.18.33.0/24","104.19.32.0/22","104.19.48.0/21","104.19.144.0/21","198.41.208.0/23","104.26.0.0/20","172.67.64.0/20"];
 (async function () {
 'use strict';
 const core = CFRankCore;
-let opts, stateKey, finished=false, ownsRun=false;
+const ui = CFPanelUI;
+let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
-const networkLabel=/^(pdp_ip|rmnet)/.test(localNetwork.v4&&localNetwork.v4.primaryInterface||'')?'蜂窝网络':localNetwork.wifi&&localNetwork.wifi.ssid?'Wi-Fi':'当前网络';
-const UA='CF-Edge-AutoRank/0.1.3';
+const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
+const UA='CF-Edge-AutoRank/0.1.4';
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
-function done(title,content,error,notify,panelContent) {
+function isOwner(){const s=read();return ownsRun&&s.ownerId===ownerId&&s.running===true;}
+function requireOwner(){if(ownsRun&&!isOwner())throw new Error('本轮已停止或被新任务替代');}
+function touch(){
+  if(!isOwner())return;
+  const s=read();if(Date.now()-(s.updatedAt||0)>=1000)write({...s,updatedAt:Date.now()});
+}
+function done(title,content,error,notify) {
   if(finished)return;finished=true;
   console.log(title+'\n'+content);
-  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,panelContent||content,{sound:false,action:'clipboard',text:title+'\n'+content});
-  const visible=typeof $input==='object'&&$input.purpose==='panel'&&typeof panelContent==='string'?panelContent:content;
-  $done({title,content:visible,style:error?'error':'info'});
-}
-function compactStatus(s){
-  if(!s.stage)return '点击完成测速、前十更新与订阅核对。';
-  const traffic='约 '+((s.bytes||0)/1000000).toFixed(1)+' MB';
-  if(s.running)return s.stage+(s.total?' '+(s.done||0)+'/'+s.total:'')+'\n'+traffic+' · 请保持 Surge 前台';
-  if(s.stage==='完成'&&s.result)return (s.result.changed?'已更新':'已核对')+' '+s.result.selected.length+' 个节点 · '+traffic+'\n请刷新原 CF 订阅；再次点击可重新优选';
-  return s.stage+' · '+traffic+(s.message?'\n'+s.message:'');
+  const isPanel=typeof $input==='object'&&$input&&$input.purpose==='panel';
+  const state=stateKey?read():{};
+  const panel=ui.view(opts&&opts.action==='status'?'status':'main',state,Date.now(),opts&&opts.mode,error?content:null);
+  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,error?content:panel.content+(state.stage==='完成'?'\n请刷新原 CF 订阅':''),{sound:false,action:'clipboard',text:title+'\n'+content});
+  $done(isPanel?panel:{title,content,icon:'cloud.fill','icon-color':error?'#E05252':'#F48120'});
 }
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载数据约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
+  if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.message)lines.push(s.message);
   if(s.result)lines.push(...s.result.selected.map((x,i)=>String(i+1).padStart(2,'0')+' '+x.key+' · '+x.score.toFixed(2)+' Mbps'));
   return lines.join('\n');
 }
 function request(options,method) {
   return new Promise((resolve,reject)=>{
+    requireOwner();touch();
     const begin=Date.now();
     $httpClient[method.toLowerCase()](options,(error,response,data)=>{
+      try { requireOwner();touch(); } catch (e) {reject(e);return;}
       const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':'request failed'):null;
       const bytes=data&&typeof data.byteLength==='number'?data.byteLength:data&&Array.isArray(data)?data.length:0;
       resolve({error:safeError,status:response?Number(response.status):0,headers:response&&response.headers||{},data,bytes,ms:Math.max(1,Date.now()-begin)});
@@ -257,13 +337,17 @@ function decodeJSON(text,label){try{return JSON.parse(text);}catch(_){throw new 
 try {
   opts=core.settings(typeof $argument==='string'?$argument:'');
   stateKey='CFEdgeRank_'+opts.host;
-  if(opts.action==='status'){const s=read();done('CF 优选状态',statusText(s),false,false,compactStatus(s));return;}
+  if(opts.action==='status'){const s=read();done('Cloudflare 测速进度',statusText(s),false,false);return;}
   if(opts.action==='cancel'){const s=read();if(s.running){s.cancelRequested=true;s.message='已请求取消；正在保存时将先完成核对或恢复';write(s);}done('CF 取消请求',s.running?'将在当前请求结束后停止。':'当前没有进行中的测试。',false,false);return;}
-  if(typeof $trigger==='string'&&$trigger==='auto-interval'){const s=read();done('CF 一键优选',statusText(s),false,false,compactStatus(s));return;}
+  if(typeof $trigger==='string'&&$trigger==='auto-interval'){const s=read();done('Cloudflare 一键优选',statusText(s),false,false);return;}
   if(!opts.password)throw new Error('请在模块参数 admin_password 填写后台登录密码；不要发送到聊天或提交到仓库');
   const previous=read();
-  if(previous.running&&Date.now()-previous.updatedAt<180000){done('CF 正在优选',statusText(previous),false,false,compactStatus(previous));return;}
-  if(opts.action==='start'){ownsRun=true;write({running:true,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,bytes:0,cancelRequested:false});}
+  if(previous.running&&Date.now()-previous.updatedAt<ui.RESTART_MS){done('Cloudflare 正在优选',statusText(previous),false,false);return;}
+  const history=ui.lastSuccess(previous);
+  if(opts.action==='start'){
+    ownerId=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);ownsRun=true;
+    write({running:true,ownerId,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,network,lastSuccess:history,bytes:0,cancelRequested:false});
+  }
   const origin='https://'+opts.host;
   async function control(method,path,body){
     if(!(/^\/admin\/(config\.json|ADD\.txt)$/.test(path)||/^\/sub\?token=[a-fA-F0-9]{32}&(b64|surge)$/.test(path)))throw new Error('拒绝未授权的后台路径');
@@ -299,19 +383,23 @@ try {
     login,control,
     probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
       'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
-    cancelled:async()=>!!read().cancelRequested,
-    progress:async p=>{const old=read();write({...p,running:true,cancelRequested:!!old.cancelRequested});
+    cancelled:async()=>!isOwner()||!!read().cancelRequested,
+    progress:async p=>{requireOwner();const old=read();write({...p,ownerId,network,lastSuccess:history,running:true,cancelRequested:!!old.cancelRequested});
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
-    backup:async value=>{if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
+    backup:async value=>{requireOwner();if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
   };
   const result=await core.execute(env,opts,CF_RANK_POOLS);
+  requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
-  write({running:false,stage:'完成',updatedAt:Date.now(),bytes:result.bytes,result,message});
-  done('CF 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true,compactStatus(read()));
+  const finishedAt=Date.now();
+  const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,changed:result.changed,elapsedMs:finishedAt-started};
+  write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
+  done('Cloudflare 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true);
 } catch(error) {
   const message=String(error.message||'未知错误');
+  if(stateKey&&ownsRun&&!isOwner()){done('Cloudflare 旧任务已结束',statusText(read()),false,false);return;}
   if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',updatedAt:Date.now(),message});}catch(_){}}
-  done('CF 优选未完成',message,true,true);
+  done('Cloudflare 优选未完成',message,true,true);
 }
 })();

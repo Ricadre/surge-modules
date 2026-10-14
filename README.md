@@ -6,16 +6,18 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
-| CF 本机优选与自动订阅 | 0.1.3 · 单面板预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
+| Cloudflare 一键优选 | 0.1.4 · 橙色云朵与独立进度面板，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.1.0 · 测试版，尚未完成实机验证 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | X 信息流广告过滤 | 0.1.1 · 已停用，无过滤功能 | [停用版 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/X-AdFilter-Experimental.sgmodule) |
 
-## CF 本机优选与自动订阅（预览版）
+## Cloudflare 一键优选（预览版）
 
 在当前 iPhone / Mac 网络中手动测试 CF 候选入口，取复测排名靠前的 10 个不同 IP，自动更新已有 edgetunnel 后台自定义列表；成功后手动刷新原 Surge 订阅。默认省流档，保留完整档。模块自动下载远程脚本，只需填写后台域名和后台密码，无需手动放置文件；公开文件不含个人凭据。
 
-只保留一个“CF 一键优选”面板，点一次完成测速、保存与订阅核对，结束后显示两行摘要。取消、完整状态和单独复查保留在脚本列表中。仅添加脚本与面板，不包含分流规则、策略组或 MITM。22 项自动化测试通过；已确认一次手机运行后两种订阅均更新为 10 个新入口，多网络重复验证仍待完成。安装参数、流量说明、支持范围和操作步骤见 [CF 优选说明](docs/cf-autorank.md)。
+“Cloudflare 一键优选”使用橙色云朵，点一次运行完整流程，下方两行显示上次成功时间、当时的 Wi-Fi/蜂窝网络、节点数、档位和数据量。独立的“Cloudflare 测速进度”面板只读本机记录，切回策略页面或点击刷新可查看阶段、数量、耗时及最近活动；长期无活动会提示可能暂停或中断，不保证 iOS 后台持续运行。
+
+自动化检查覆盖模块语法和模拟数据；不同设备、网络和 App 版本的兼容性需分别确认。安装与限制见 [Cloudflare 优选说明](docs/cf-autorank.md)。
 
 ## 高德地图推广过滤（测试版）
 

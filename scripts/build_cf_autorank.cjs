@@ -6,7 +6,7 @@ const read = name => fs.readFileSync(path.join(src, name), 'utf8');
 const pools = JSON.parse(read('pools.json'));
 const version = /^#!version=(.+)$/m.exec(read('module.sgmodule'))[1];
 const bundle = '// CF AutoRank v' + version + '. Credentials are entered by the user; never bundle secrets.\n'
-  + read('core.js') + '\nconst CF_RANK_POOLS=' + JSON.stringify(pools) + ';\n' + read('surge.js');
+  + read('core.js') + '\n' + read('panel.js') + '\nconst CF_RANK_POOLS=' + JSON.stringify(pools) + ';\n' + read('surge.js');
 const artifacts = {
   'scripts/CF-AutoRank.js': bundle,
   'modules/CF-AutoRank.sgmodule': read('module.sgmodule'),
