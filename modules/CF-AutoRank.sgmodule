@@ -1,7 +1,7 @@
 #!name=CF 本机优选与自动订阅（预览版）
-#!version=0.1.1
+#!version=0.1.2
 #!desc=手动在当前网络筛选候选池并回写前十。省流约100–200MB，完整约300–600MB；保持Surge前台，不切网。不会修改规则或切换策略组。
-#!arguments=backend:,mode:lite,candidates:320,admin_password:
+#!arguments=backend,mode:lite,candidates:320,admin_password
 #!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。候选数40–1024。
 
 [Script]
