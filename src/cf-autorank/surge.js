@@ -5,14 +5,22 @@ let opts, stateKey, finished=false, ownsRun=false;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const networkLabel=/^(pdp_ip|rmnet)/.test(localNetwork.v4&&localNetwork.v4.primaryInterface||'')?'蜂窝网络':localNetwork.wifi&&localNetwork.wifi.ssid?'Wi-Fi':'当前网络';
-const UA='CF-Edge-AutoRank/0.1.1';
+const UA='CF-Edge-AutoRank/0.1.3';
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
-function done(title,content,error,notify) {
+function done(title,content,error,notify,panelContent) {
   if(finished)return;finished=true;
   console.log(title+'\n'+content);
-  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,content,{sound:false,action:'clipboard',text:title+'\n'+content});
-  $done({title,content,style:error?'error':'info'});
+  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,panelContent||content,{sound:false,action:'clipboard',text:title+'\n'+content});
+  const visible=typeof $input==='object'&&$input.purpose==='panel'&&typeof panelContent==='string'?panelContent:content;
+  $done({title,content:visible,style:error?'error':'info'});
+}
+function compactStatus(s){
+  if(!s.stage)return '点击完成测速、前十更新与订阅核对。';
+  const traffic='约 '+((s.bytes||0)/1000000).toFixed(1)+' MB';
+  if(s.running)return s.stage+(s.total?' '+(s.done||0)+'/'+s.total:'')+'\n'+traffic+' · 请保持 Surge 前台';
+  if(s.stage==='完成'&&s.result)return (s.result.changed?'已更新':'已核对')+' '+s.result.selected.length+' 个节点 · '+traffic+'\n请刷新原 CF 订阅；再次点击可重新优选';
+  return s.stage+' · '+traffic+(s.message?'\n'+s.message:'');
 }
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
@@ -36,12 +44,12 @@ function decodeJSON(text,label){try{return JSON.parse(text);}catch(_){throw new 
 try {
   opts=core.settings(typeof $argument==='string'?$argument:'');
   stateKey='CFEdgeRank_'+opts.host;
-  if(opts.action==='status'){const s=read();done('CF 优选状态',statusText(s),false,false);return;}
+  if(opts.action==='status'){const s=read();done('CF 优选状态',statusText(s),false,false,compactStatus(s));return;}
   if(opts.action==='cancel'){const s=read();if(s.running){s.cancelRequested=true;s.message='已请求取消；正在保存时将先完成核对或恢复';write(s);}done('CF 取消请求',s.running?'将在当前请求结束后停止。':'当前没有进行中的测试。',false,false);return;}
-  if(typeof $trigger==='string'&&$trigger==='auto-interval'){done('CF 优选','请手动点击开始；禁止自动定时运行。',false,false);return;}
+  if(typeof $trigger==='string'&&$trigger==='auto-interval'){const s=read();done('CF 一键优选',statusText(s),false,false,compactStatus(s));return;}
   if(!opts.password)throw new Error('请在模块参数 admin_password 填写后台登录密码；不要发送到聊天或提交到仓库');
   const previous=read();
-  if(previous.running&&Date.now()-previous.updatedAt<180000)throw new Error('本机已有测试正在进行，请查看状态或取消');
+  if(previous.running&&Date.now()-previous.updatedAt<180000){done('CF 正在优选',statusText(previous),false,false,compactStatus(previous));return;}
   if(opts.action==='start'){ownsRun=true;write({running:true,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,bytes:0,cancelRequested:false});}
   const origin='https://'+opts.host;
   async function control(method,path,body){
@@ -87,7 +95,7 @@ try {
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
   write({running:false,stage:'完成',updatedAt:Date.now(),bytes:result.bytes,result,message});
-  done('CF 本轮前十 · '+(result.changed?'已发布':'无变化'),statusText(read()),false,true);
+  done('CF 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true,compactStatus(read()));
 } catch(error) {
   const message=String(error.message||'未知错误');
   if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',updatedAt:Date.now(),message});}catch(_){}}

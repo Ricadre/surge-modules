@@ -43,7 +43,21 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(r.output.style,'info');assert.equal(r.writes.length,1);assert.equal(r.writes[0].split('\n').length,10);assert.equal(r.doneCount,1);
  assert(r.requests.some(x=>x.descriptor));assert(r.requests.every(x=>x.method==='GET'||x.method==='HEAD'||/\/login|\/admin\/ADD.txt/.test(x.url)));
  assert(!JSON.stringify(r.logs).includes('local-secret'));assert(!JSON.stringify(r.store).includes('local-secret'));assert(!JSON.stringify(r.store).includes('11111111-1111-4111-8111-111111111111'));
+ assert.match(r.output.content,/已更新 10 个节点/);assert.equal(r.output.content.split('\n').length,2);
+ assert(!/\d+\.\d+\.\d+\.\d+/.test(r.output.content));assert(r.logs.some(line=>line.includes('Mbps')));
+ const verified=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(verified.result.verified,true);
 });
 test('local active run lock prevents a second run',async()=>{
- const r=await run('start|example.net|lite|40|local-secret','button',{'CFEdgeRank_example.net':JSON.stringify({running:true,updatedAt:Date.now()})});assert.equal(r.requests.length,0);assert.match(r.output.content,/已有测试/);
+ const active=JSON.stringify({running:true,stage:'下载初筛',done:8,total:40,bytes:1000000,updatedAt:Date.now()});
+ const r=await run('start|example.net|lite|40|local-secret','button',{'CFEdgeRank_example.net':active});
+ assert.equal(r.requests.length,0);assert.match(r.output.title,/正在优选/);assert.match(r.output.content,/下载初筛 8\/40/);assert.equal(r.store['CFEdgeRank_example.net'],active);
+});
+test('passive panel refresh displays previous result without restarting a run',async()=>{
+ const state=JSON.stringify({running:false,stage:'完成',bytes:123000000,updatedAt:Date.now(),result:{changed:true,selected:Array.from({length:10},(_,i)=>({key:'8.35.211.'+(i+1)+':2053',score:8}))}});
+ const r=await run('start|example.net|lite|40|local-secret','auto-interval',{'CFEdgeRank_example.net':state});
+ assert.equal(r.requests.length,0);assert.equal(r.writes.length,0);assert.match(r.output.content,/已更新 10 个节点/);assert.equal(r.store['CFEdgeRank_example.net'],state);
+});
+test('cancel stays available from scripts without making any backend request',async()=>{
+ const r=await run('cancel|example.net|lite|40|','intent',{'CFEdgeRank_example.net':JSON.stringify({running:true,stage:'下载初筛',updatedAt:Date.now()})});
+ assert.equal(r.requests.length,0);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).cancelRequested,true);
 });

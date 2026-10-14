@@ -4,7 +4,8 @@ const root = path.resolve(__dirname, '..');
 const src = path.join(root, 'src/cf-autorank');
 const read = name => fs.readFileSync(path.join(src, name), 'utf8');
 const pools = JSON.parse(read('pools.json'));
-const bundle = '// CF AutoRank v0.1.1. Credentials are entered by the user; never bundle secrets.\n'
+const version = /^#!version=(.+)$/m.exec(read('module.sgmodule'))[1];
+const bundle = '// CF AutoRank v' + version + '. Credentials are entered by the user; never bundle secrets.\n'
   + read('core.js') + '\nconst CF_RANK_POOLS=' + JSON.stringify(pools) + ';\n' + read('surge.js');
 const artifacts = {
   'scripts/CF-AutoRank.js': bundle,

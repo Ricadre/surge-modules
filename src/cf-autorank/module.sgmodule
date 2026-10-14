@@ -1,17 +1,14 @@
 #!name=CF 本机优选与自动订阅（预览版）
-#!version=0.1.2
-#!desc=手动在当前网络筛选候选池并回写前十。省流约100–200MB，完整约300–600MB；保持Surge前台，不切网。不会修改规则或切换策略组。
+#!version=0.1.3
+#!desc=一个面板，一键完成当前网络测速、前十筛选、后台保存与订阅核对。省流约100–200MB，完整约300–600MB；保持Surge前台，不切网。
 #!arguments=backend,mode:lite,candidates:320,admin_password
 #!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。候选数40–1024。
 
 [Script]
-CF-Rank-Start = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
-CF-Rank-Status = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js,timeout=5,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-Rank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js,timeout=5,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-Rank-Verify = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-Rank-Start = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.3,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-Rank-Status = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.3,timeout=5,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-Rank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.3,timeout=5,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-Rank-Verify = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.3,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
 
 [Panel]
-CF-Rank-Start = title="CF 开始优选并更新",content="手动点击：当前网络筛选候选池并自动保存前十",style=info,script-name=CF-Rank-Start
-CF-Rank-Status = title="CF 查看进度",content="测速中可点这里查看进度与已用流量",style=info,script-name=CF-Rank-Status
-CF-Rank-Cancel = title="CF 取消本轮",content="请求停止；保存阶段会先完成核对或恢复",style=info,script-name=CF-Rank-Cancel
-CF-Rank-Verify = title="CF 复查订阅",content="只检查后台、原始订阅与Surge订阅是否一致",style=info,script-name=CF-Rank-Verify
+CF-Rank-Start = title="CF 一键优选",content="点击完成测速 → 前十更新 → 订阅核对",style=info,script-name=CF-Rank-Start
