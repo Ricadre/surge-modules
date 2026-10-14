@@ -1,0 +1,13 @@
+#!name=豆瓣开屏广告过滤
+#!desc=仅清空豆瓣开屏接口的广告列表；需 Surge iOS 5.14.0+，开启重写与 MITM 并信任证书。只解密 api.douban.com。已缓存广告可能需要后续启动才消失。
+#!version=0.1.0
+#!homepage=https://github.com/Ricadre/surge-modules
+
+# 兼容 /v2/app_ads/splash 与 /v2/app_ads/splash_preload 开屏接口。
+# 仅修改顶层 ads 数组与已存在的 preload_ids；未知结构原样通过。
+# 不包含外部脚本、不封锁整个 API 主机，不解密 frodo.douban.com。
+[Body Rewrite]
+http-response-jq ^https://api\.douban\.com/v2/app_ads/splash(?:_preload)?/?(?:\?.*)?$ 'if type == "object" then if (.ads | type) == "array" then .ads = [] | if has("preload_ids") then .preload_ids = null else . end else . end else . end'
+
+[MITM]
+hostname = %APPEND% api.douban.com

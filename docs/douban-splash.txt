@@ -1,0 +1,33 @@
+豆瓣开屏广告过滤
+
+模块地址：
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule
+
+范围：仅处理 api.douban.com/v2/app_ads/splash 与 splash_preload。
+需要 Surge iOS 5.14.0+、重写功能、MITM，以及已安装并完全信任的 Surge CA。
+MITM 增加的唯一主机是 api.douban.com；同一主机的其他路径仍会被解密，但不被本模块改写。
+不修改 frodo.douban.com，不封锁 API、图片或视频域名，不处理信息流广告。
+
+原理：把返回 JSON 顶层的 ads 数组清空，并把已存在的 preload_ids 设为 null。
+其他字段保留。未知结构、无 ads 数组的错误响应原样通过。
+使用 Surge 内置 JQ Body Rewrite，无远程脚本依赖。
+
+验证方法与限制
+使用合成 JSON 检查字段保留、未知结构和重复执行；运行 python3 tests/test_douban_splash.py。
+在目标设备确认规则命中后，分别检查首页、搜索和详情页等正常功能。
+缓存、App 版本和广告投放方式可能影响效果；规则覆盖不代表所有入口都有效。
+
+缓存与恢复：
+模块不能直接删除 App 已缓存到本地的广告。启用后先让豆瓣完成一次联网，再彻底退出并重新打开。
+若仍显示缓存广告，不代表请求一定未命中；可在 Surge 中核对该接口的响应改写记录。
+若出现加载异常，停用模块并重启豆瓣。手动添加的同名 MITM 主机需要单独移除。
+不需要卸载豆瓣，不需要重新登录。
+
+参考与差异：
+1. 可莉豆瓣去广告模块的公开镜像（完整模块注明需 IPA 签名，不能视为 App Store 版兼容性保证）：
+https://github.com/sooyaaabo/Egern/blob/3224a15e2ec891fc51aa1cf9a31d767046f7b529/Sgmodule/DouBan_remove_ads.sgmodule
+本模块只借鉴开屏接口线索，按接口结构独立实现，不复制其完整规则或引入其他主机。
+2. Surge JQ Body Rewrite：
+https://manual.nssurge.com/http/body-rewrite.html
+
+公开仓库不包含抓包原文、账号标识、Cookie、令牌或个人配置。
