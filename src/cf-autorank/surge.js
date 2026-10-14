@@ -1,0 +1,96 @@
+(async function () {
+'use strict';
+const core = CFRankCore;
+let opts, stateKey, finished=false, ownsRun=false;
+const started=Date.now();
+const localNetwork=typeof $network==='object'?$network:{};
+const networkLabel=/^(pdp_ip|rmnet)/.test(localNetwork.v4&&localNetwork.v4.primaryInterface||'')?'蜂窝网络':localNetwork.wifi&&localNetwork.wifi.ssid?'Wi-Fi':'当前网络';
+const UA='CF-Edge-AutoRank/0.1.1';
+function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
+function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
+function done(title,content,error,notify) {
+  if(finished)return;finished=true;
+  console.log(title+'\n'+content);
+  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,content,{sound:false,action:'clipboard',text:title+'\n'+content});
+  $done({title,content,style:error?'error':'info'});
+}
+function statusText(s){
+  if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
+  const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载数据约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
+  if(s.message)lines.push(s.message);
+  if(s.result)lines.push(...s.result.selected.map((x,i)=>String(i+1).padStart(2,'0')+' '+x.key+' · '+x.score.toFixed(2)+' Mbps'));
+  return lines.join('\n');
+}
+function request(options,method) {
+  return new Promise((resolve,reject)=>{
+    const begin=Date.now();
+    $httpClient[method.toLowerCase()](options,(error,response,data)=>{
+      const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':'request failed'):null;
+      const bytes=data&&typeof data.byteLength==='number'?data.byteLength:data&&Array.isArray(data)?data.length:0;
+      resolve({error:safeError,status:response?Number(response.status):0,headers:response&&response.headers||{},data,bytes,ms:Math.max(1,Date.now()-begin)});
+    });
+  });
+}
+function decodeJSON(text,label){try{return JSON.parse(text);}catch(_){throw new Error(label+'返回格式异常');}}
+try {
+  opts=core.settings(typeof $argument==='string'?$argument:'');
+  stateKey='CFEdgeRank_'+opts.host;
+  if(opts.action==='status'){const s=read();done('CF 优选状态',statusText(s),false,false);return;}
+  if(opts.action==='cancel'){const s=read();if(s.running){s.cancelRequested=true;s.message='已请求取消；正在保存时将先完成核对或恢复';write(s);}done('CF 取消请求',s.running?'将在当前请求结束后停止。':'当前没有进行中的测试。',false,false);return;}
+  if(typeof $trigger==='string'&&$trigger==='auto-interval'){done('CF 优选','请手动点击开始；禁止自动定时运行。',false,false);return;}
+  if(!opts.password)throw new Error('请在模块参数 admin_password 填写后台登录密码；不要发送到聊天或提交到仓库');
+  const previous=read();
+  if(previous.running&&Date.now()-previous.updatedAt<180000)throw new Error('本机已有测试正在进行，请查看状态或取消');
+  if(opts.action==='start'){ownsRun=true;write({running:true,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,bytes:0,cancelRequested:false});}
+  const origin='https://'+opts.host;
+  async function control(method,path,body){
+    if(!(/^\/admin\/(config\.json|ADD\.txt)$/.test(path)||/^\/sub\?token=[a-fA-F0-9]{32}&(b64|surge)$/.test(path)))throw new Error('拒绝未授权的后台路径');
+    if(method==='POST'&&path!=='/admin/ADD.txt')throw new Error('本工具只允许保存自定义节点列表');
+    const url=origin+path+(path.includes('?')?'&':'?')+'cf_rank_read='+Date.now();
+    const r=await request({url,body,policy:'DIRECT',timeout:35,'auto-cookie':true,'auto-redirect':false,
+      headers:{'User-Agent':UA,'Cache-Control':'no-cache','Content-Type':'text/plain;charset=utf-8'}},method);
+    if(r.error||r.status!==200)throw new Error(r.status===302?'后台登录已失效，请重新运行':'后台请求失败，请检查网络；未输出凭据');
+    if(path==='/admin/config.json'||method==='POST')return decodeJSON(r.data,'后台');
+    if(typeof r.data!=='string')throw new Error('后台返回的数据格式不正确');
+    return r.data;
+  }
+  async function login(host,password){
+    const r=await request({url:origin+'/login',body:'password='+encodeURIComponent(password),policy:'DIRECT',timeout:20,
+      'auto-cookie':true,'auto-redirect':false,headers:{'User-Agent':UA,'Content-Type':'application/x-www-form-urlencoded'}},'POST');
+    if(r.error||![200,302].includes(r.status))throw new Error('后台无法连接或登录失败');
+    if(r.status===200){let data;try{data=JSON.parse(r.data);}catch(_){throw new Error('后台密码未被接受，请在模块参数检查');}if(!data.success)throw new Error('后台登录未成功');}
+  }
+  if(opts.action==='verify') {
+    await login(opts.host,opts.password);
+    const cfg=core.configGuard(await control('GET','/admin/config.json'),opts.host);
+    const entries=core.parseList(await control('GET','/admin/ADD.txt'),CF_RANK_POOLS);
+    const raw=core.parseRaw(await control('GET','/sub?token='+cfg.token+'&b64'),cfg,CF_RANK_POOLS);
+    const surge=core.parseSurge(await control('GET','/sub?token='+cfg.token+'&surge'),cfg,CF_RANK_POOLS);
+    if(!core.sameEntries(entries,raw)||!core.sameEntries(entries,surge))throw new Error('后台与两种订阅尚未一致，可稍后复查');
+    done('CF 订阅核对通过',entries.length+' 个入口与后台一致，可以刷新 Surge 订阅。',false,true);return;
+  }
+  let lastStage='', lastLogged=0;
+  const env={
+    id:()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10), now:()=>Date.now(), random:()=>Math.random(),
+    networkKey:()=>{const n=typeof $network==='object'?$network:localNetwork;return JSON.stringify([n.wifi&&n.wifi.ssid,n.v4&&n.v4.primaryInterface,n.v4&&n.v4.primaryAddress]);},
+    sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+    login,control,
+    probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
+      'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
+    cancelled:async()=>!!read().cancelRequested,
+    progress:async p=>{const old=read();write({...p,running:true,cancelRequested:!!old.cancelRequested});
+      if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
+    backup:async value=>{if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
+  };
+  const result=await core.execute(env,opts,CF_RANK_POOLS);
+  const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
+  const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
+  write({running:false,stage:'完成',updatedAt:Date.now(),bytes:result.bytes,result,message});
+  done('CF 本轮前十 · '+(result.changed?'已发布':'无变化'),statusText(read()),false,true);
+} catch(error) {
+  const message=String(error.message||'未知错误');
+  if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',updatedAt:Date.now(),message});}catch(_){}}
+  done('CF 优选未完成',message,true,true);
+}
+})();

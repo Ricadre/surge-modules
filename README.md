@@ -6,9 +6,16 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
+| CF 本机优选与自动订阅 | 0.1.1 · 预览版，待 iPhone 完整流程验证 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.1.0 · 测试版，尚未完成实机验证 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | X 信息流广告过滤 | 0.1.1 · 已停用，无过滤功能 | [停用版 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/X-AdFilter-Experimental.sgmodule) |
+
+## CF 本机优选与自动订阅（预览版）
+
+在当前 iPhone / Mac 网络中手动测试 CF 候选入口，取复测排名靠前的 10 个不同 IP，自动更新已有 edgetunnel 后台自定义列表；成功后手动刷新原 Surge 订阅。默认省流档，保留完整档。模块自动下载远程脚本，只需填写后台域名和后台密码，无需手动放置文件；公开文件不含个人凭据。
+
+仅添加脚本与面板，不包含分流规则、策略组或 MITM。20 项自动化测试通过，iPhone 整轮测速和真实后台自动回写尚待验证。安装参数、流量说明、支持范围和操作步骤见 [CF 优选说明](docs/cf-autorank.md)。
 
 ## 高德地图推广过滤（测试版）
 
@@ -57,10 +64,10 @@ Surge 官方说明[启用 MITM 可能中断采用证书锁定的 App 连接](htt
 ## 目录与维护
 
 ```text
-modules/   远程发布文件（高德测试版、豆瓣开屏模块、X 停用说明）
-src/       历史过滤逻辑，不进入当前发布文件
-scripts/   生成高德测试版与 X 停用版模块
-tests/    高德/豆瓣规则测试、X 停用检查与历史 JSON 样本测试
+modules/   远程发布的 Surge 模块
+src/       模块源代码及历史过滤逻辑
+scripts/   构建脚本，以及 CF-AutoRank.js 远程运行文件
+tests/     各模块自动化检查（CF 测试位于 cf-autorank/）
 docs/     模块说明
 ```
 
@@ -73,7 +80,15 @@ python3 tests/test_douban_splash.py
 python3 tests/test_x_ad_filter.py
 ```
 
-构建只需 Python 3；规则测试还需 jq 1.7+。`build.py` 只生成 X 停用版，不会将 `src/x-ad-filter.jq` 重新发布为活动规则；`build_amap.py` 生成高德测试版。测试检查 URL 范围、过滤逻辑、保留字段、未知结构兼容及 X 停用状态，不能替代手机验证。
+广告模块构建只需 Python 3；规则测试还需 jq 1.7+。`build.py` 只生成 X 停用版，不会将 `src/x-ad-filter.jq` 重新发布为活动规则；`build_amap.py` 生成高德测试版。测试检查 URL 范围、过滤逻辑、保留字段、未知结构兼容及 X 停用状态，不能替代手机验证。
+
+CF 模块单独使用 Node.js 20+：
+
+```sh
+node --test tests/cf-autorank/*.test.cjs
+node scripts/build_cf_autorank.cjs --check
+node --check scripts/CF-AutoRank.js
+```
 
 新增模块使用独立文件和说明，保持远程路径稳定。未实机验证的模块需明确标为测试版，由用户主动选择安装，不自动加入主配置。不要将个人代理配置、Cookie、令牌、证书或私钥放入此公开仓库。
 
