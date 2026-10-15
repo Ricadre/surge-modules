@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.4. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.5. Credentials are entered by the user; never bundle secrets.
 (function (root) {
 'use strict';
 const MODES = {
@@ -168,7 +168,7 @@ async function execute(env,opts,pools) {
   const selected=[];
   for(const e of topDistinct(ranking,ranking.length)) { const check=await connect(e,'youtube');if(check.valid)selected.push(e);if(selected.length===10)break; }
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,'稳定有效候选不足 10 个，保留原订阅');
-  const proposed=selected.map((e,i)=>e.key+'#CF-YouTube-'+String(i+1).padStart(2,'0')).join('\n');
+  const proposed=selected.map((e,i)=>e.key+'#CF'+(i+1)+'-'+e.ip).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
   assert(fresh.cfg.fingerprint===baseline.cfg.fingerprint&&fresh.list===baseline.list,'测速期间后台被改动，已保留当前设置');
@@ -294,7 +294,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.4';
+const UA='CF-Edge-AutoRank/0.1.5';
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
 function isOwner(){const s=read();return ownsRun&&s.ownerId===ownerId&&s.running===true;}

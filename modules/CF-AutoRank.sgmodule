@@ -1,14 +1,14 @@
 #!name=Cloudflare 一键优选（预览版）
-#!version=0.1.4
+#!version=0.1.5
 #!desc=橙色云朵一键优选，独立进度面板记录阶段、数量与耗时；返回Surge可查看上次进展。省流约100–200MB，完整约300–600MB。
 #!arguments=backend,mode:lite,candidates:320,admin_password
 #!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。候选数40–1024。
 
 [Script]
-CF-Rank-Start = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.4,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
-CF-Rank-Status = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.4,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-Rank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.4,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-Rank-Verify = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.4,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-Rank-Start = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.5,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-Rank-Status = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.5,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-Rank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.5,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-Rank-Verify = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank.js?v=0.1.5,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
 
 [Panel]
 CF-Rank-Start = title="Cloudflare 一键优选",content="尚无成功记录\n点击开始；进度见下方",icon=cloud.fill,icon-color=#F48120,script-name=CF-Rank-Start,update-interval=1
