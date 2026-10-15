@@ -2,7 +2,7 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
 function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
 function fixture(options={}) {
- let list=Array.from({length:10},(_,i)=>`8.35.211.${i+1}:2053#CF-YouTube-${String(i+1).padStart(2,'0')}`).join('\n');
+ let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
  const original=list,posts=[],calls=[],progress=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
  const cfg=config();
  const env={
@@ -18,8 +18,8 @@ function fixture(options={}) {
    if(path==='/admin/config.json'){snapshots++;if(options.userChange&&snapshots===2)list=original.replace('8.35.211.1:','8.35.211.250:');if(options.wrongMode)cfg.优选订阅生成.local=false;return structuredClone(cfg);}
    if(path==='/admin/ADD.txt')return list;
    const entries=C.parseList(list,pools);
-   if(path.endsWith('&b64'))return Buffer.from(entries.map(e=>`trojan://${PASS}@${e.key}?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#CF`).join('\n')).toString('base64');
-   if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`CF-${i} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
+   if(path.endsWith('&b64'))return Buffer.from(entries.map(e=>`trojan://${PASS}@${e.key}?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${encodeURIComponent(options.rawNameFail&&posts.length===1?'Old name':e.name)}`).join('\n')).toString('base64');
+   if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`${options.surgeNameFail&&posts.length===1?'Old name':e.name} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
    throw new Error('Unknown path');
   },
   probe:async spec=>{
@@ -79,4 +79,27 @@ test('failed post-save subscription validation restores original list when still
 test('raw subscription requires matching credentials and TLS host',()=>{
  const cfg=C.configGuard(config(),HOST);
  assert.throws(()=>C.parseRaw(Buffer.from('trojan://wrong@8.35.211.1:2053?security=tls&type=ws&host=example.net&sni=example.net&path=%2F').toString('base64'),cfg,pools));
+});
+test('rename preserves every endpoint and its order without any probes',async()=>{
+ const f=fixture();f.env.probe=async()=>{throw new Error('Rename must not test or download');};
+ const before=C.parseList(f.original,pools);const r=await C.renameOnly(f.env,f.opts,pools);
+ assert(r.changed&&r.verified);assert.equal(f.posts.length,1);
+ const after=C.parseList(f.getList(),pools);assert(C.sameEntries(before,after));
+ assert.deepEqual(after.map(e=>e.name),Array.from({length:10},(_,i)=>`CF${i+1}-8.35.211.${i+1}`));
+});
+test('rename is idempotent and checks both subscription formats',async()=>{
+ const f=fixture({alreadyNamed:true});const r=await C.renameOnly(f.env,f.opts,pools);
+ assert(r.verified&&!r.changed);assert.equal(f.posts.length,0);
+ assert(f.calls.some(x=>x[1].endsWith('&surge')));
+});
+for(const [label,options,pattern] of [
+ ['nine entries',{count:9},/10 个/],['user edited list',{userChange:true},/后台被改动/],['unsupported mode',{wrongMode:true},/自定义模式/]
+])test('rename rejects '+label+' without writes',async()=>{
+ const f=fixture(options);await assert.rejects(()=>C.renameOnly(f.env,f.opts,pools),pattern);assert.equal(f.posts.length,0);
+});
+for(const key of ['rawNameFail','surgeNameFail'])test('unchanged IPs with stale '+key+' cannot pass rename or rank verification',async()=>{
+ for(const action of [C.renameOnly,C.execute]) {
+  const f=fixture({[key]:true});await assert.rejects(()=>action(f.env,f.opts,pools),/验证失败/);
+  assert.equal(f.posts.length,2);assert.equal(f.getList(),f.original);
+ }
 });

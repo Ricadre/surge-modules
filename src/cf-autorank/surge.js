@@ -6,7 +6,8 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.5';
+const UA='CF-Edge-AutoRank/0.1.6';
+console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
 function isOwner(){const s=read();return ownsRun&&s.ownerId===ownerId&&s.running===true;}
@@ -21,7 +22,7 @@ function done(title,content,error,notify) {
   const isPanel=typeof $input==='object'&&$input&&$input.purpose==='panel';
   const state=stateKey?read():{};
   const panel=ui.view(opts&&opts.action==='status'?'status':'main',state,Date.now(),opts&&opts.mode,error?content:null);
-  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,error?content:panel.content+(state.stage==='完成'?'\n请刷新原 CF 订阅':''),{sound:false,action:'clipboard',text:title+'\n'+content});
+  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,error||opts&&['rename','verify'].includes(opts.action)?content:panel.content+(state.stage==='完成'?'\n请刷新原 CF 订阅':''),{sound:false,action:'clipboard',text:title+'\n'+content});
   $done(isPanel?panel:{title,content,icon:'cloud.fill','icon-color':error?'#E05252':'#F48120'});
 }
 function statusText(s){
@@ -56,7 +57,7 @@ try {
   const previous=read();
   if(previous.running&&Date.now()-previous.updatedAt<ui.RESTART_MS){done('Cloudflare 正在优选',statusText(previous),false,false);return;}
   const history=ui.lastSuccess(previous);
-  if(opts.action==='start'){
+  if(opts.action==='start'||opts.action==='rename'){
     ownerId=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);ownsRun=true;
     write({running:true,ownerId,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,network,lastSuccess:history,bytes:0,cancelRequested:false});
   }
@@ -84,7 +85,7 @@ try {
     const entries=core.parseList(await control('GET','/admin/ADD.txt'),CF_RANK_POOLS);
     const raw=core.parseRaw(await control('GET','/sub?token='+cfg.token+'&b64'),cfg,CF_RANK_POOLS);
     const surge=core.parseSurge(await control('GET','/sub?token='+cfg.token+'&surge'),cfg,CF_RANK_POOLS);
-    if(!core.sameEntries(entries,raw)||!core.sameEntries(entries,surge))throw new Error('后台与两种订阅尚未一致，可稍后复查');
+    if(!core.sameNamedEntries(entries,raw)||!core.sameNamedEntries(entries,surge))throw new Error('后台与两种订阅的节点或名称尚未一致，可稍后复查');
     done('CF 订阅核对通过',entries.length+' 个入口与后台一致，可以刷新 Surge 订阅。',false,true);return;
   }
   let lastStage='', lastLogged=0;
@@ -100,6 +101,12 @@ try {
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
     backup:async value=>{requireOwner();if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
   };
+  if(opts.action==='rename') {
+    const renamed=await core.renameOnly(env,opts,CF_RANK_POOLS);requireOwner();
+    const message='10 个名称已核对为 CF1-IP 至 CF10-IP，IP、端口和顺序未变。请刷新原订阅。';
+    write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
+    done('Cloudflare 节点名称已核对',message,false,true);return;
+  }
   const result=await core.execute(env,opts,CF_RANK_POOLS);
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);

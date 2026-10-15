@@ -9,7 +9,9 @@ const bundle = '// CF AutoRank v' + version + '. Credentials are entered by the 
   + read('core.js') + '\n' + read('panel.js') + '\nconst CF_RANK_POOLS=' + JSON.stringify(pools) + ';\n' + read('surge.js');
 const artifacts = {
   'scripts/CF-AutoRank.js': bundle,
+  ['scripts/CF-AutoRank-' + version + '.js']: bundle,
   'modules/CF-AutoRank.sgmodule': read('module.sgmodule'),
+  ['modules/CF-AutoRank-' + version + '.sgmodule']: read('module.sgmodule'),
 };
 for (const [name, text] of Object.entries(artifacts)) {
   const target = path.join(root, name);

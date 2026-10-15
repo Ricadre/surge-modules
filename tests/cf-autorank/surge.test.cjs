@@ -16,9 +16,9 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
    else if(url.pathname==='/admin/config.json'){assert.equal(method,'GET');data=JSON.stringify(config);}
    else if(url.pathname==='/admin/ADD.txt'){if(method==='POST'){list=options.body;writes.push(list);data=JSON.stringify({success:true});}else data=list;}
    else if(url.pathname==='/sub'){
-    const entries=list.split('\n').map(x=>x.split('#')[0]);
-    if(url.searchParams.has('b64'))data=Buffer.from(entries.map(key=>`trojan://${uuid}@${key}?security=tls&type=ws&host=${host}&sni=${host}&path=%2F#CF`).join('\n')).toString('base64');
-    else data='[Proxy]\n'+entries.map((key,i)=>{const [ip,port]=key.split(':');return `CF-${i} = trojan, ${ip}, ${port}, password=${uuid}, sni=${host}, ws=true, ws-path=/, ws-headers=Host:"${host}", skip-cert-verify=false`;}).join('\n');
+    const entries=list.split('\n').map(x=>{const [key,name]=x.split('#');return {key,name};});
+    if(url.searchParams.has('b64'))data=Buffer.from(entries.map(({key,name})=>`trojan://${uuid}@${key}?security=tls&type=ws&host=${host}&sni=${host}&path=%2F#${encodeURIComponent(name)}`).join('\n')).toString('base64');
+    else data='[Proxy]\n'+entries.map(({key,name})=>{const [ip,port]=key.split(':');return `${name} = trojan, ${ip}, ${port}, password=${uuid}, sni=${host}, ws=true, ws-path=/, ws-headers=Host:"${host}", skip-cert-verify=false`;}).join('\n');
    } else throw new Error('unexpected control path');
   } else {
    assert.match(options['policy-descriptor'],/^CF-Probe-.* = trojan,/);assert.equal(options.policy,undefined);assert.equal(options['auto-cookie'],false);
@@ -94,4 +94,27 @@ test('manual restart replaces a stale run and saves successful network metadata'
  const saved=JSON.parse(r.store[key]);assert.notEqual(saved.ownerId,'old');assert.equal(saved.running,false);
  assert.equal(saved.lastSuccess.network.name,'Test Wi-Fi');assert.equal(r.writes.length,1);
  assert(r.states.some(x=>x.key===key&&x.value.running&&x.value.network.name==='Test Wi-Fi'));
+});
+test('rename action uses direct backend only and preserves previous speed-test history',async()=>{
+ const lastSuccess={at:Date.now()-3600000,network:{kind:'wifi',name:'Earlier Wi-Fi'},mode:'lite',count:10,bytes:100000000,changed:true};
+ const r=await run('rename|example.net|lite|40|local-secret','editor',{'CFEdgeRank_example.net':JSON.stringify({lastSuccess})});
+ assert.equal(r.writes.length,1);assert(r.requests.every(x=>x.policy==='DIRECT'&&!x.descriptor));
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.running,false);assert.equal(state.stage,'名称已核对');
+ assert.deepEqual(state.lastSuccess,lastSuccess);assert.equal(state.nameResult.verified,true);
+ assert.match(r.writes[0],/^8\.35\.211\.1:2053#CF1-8\.35\.211\.1\n/);
+});
+test('automatic refresh never renames the backend',async()=>{
+ const r=await run('rename|example.net|lite|40|local-secret','auto-interval');
+ assert.equal(r.requests.length,0);assert.equal(r.writes.length,0);
+});
+test('published module has static fallback panels and resolves every action to its versioned bundle',()=>{
+ const base=path.resolve(root,'../..'),moduleText=fs.readFileSync(path.join(base,'modules/CF-AutoRank.sgmodule'),'utf8');
+ const version=/^#!version=(.+)$/m.exec(moduleText)[1];
+ const panelLines=moduleText.split('[Panel]')[1].trim().split('\n');assert.equal(panelLines.length,2);
+ const scriptLines=moduleText.split('[Script]')[1].split('[Panel]')[0].trim().split('\n').filter(Boolean);
+ assert.equal(scriptLines.length,5);
+ const scripts=new Set(scriptLines.map(l=>l.split('=')[0].trim()));
+ for(const line of panelLines){assert.match(line,/title=".+",content=".+",style=info/);assert(scripts.has(/script-name=([^,]+)/.exec(line)[1]));}
+ for(const line of scriptLines)assert(line.includes('/scripts/CF-AutoRank-'+version+'.js,'));
+ assert.equal(fs.readFileSync(path.join(base,'scripts/CF-AutoRank-'+version+'.js'),'utf8'),fs.readFileSync(path.join(base,'scripts/CF-AutoRank.js'),'utf8'));
 });

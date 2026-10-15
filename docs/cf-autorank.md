@@ -1,4 +1,4 @@
-# Cloudflare 一键优选 · 0.1.5 预览版
+# Cloudflare 一键优选 · 0.1.6 预览版
 
 在 iPhone 或 Mac 的当前网络里测试候选 CF 入口，复测后选出 10 个不同 IP，自动保存到已有 edgetunnel 后台的自定义列表。成功提示之后，手动刷新原有 Surge 订阅即可。
 
@@ -9,12 +9,12 @@
 在 Surge 的模块页面选择通过 URL 安装，粘贴：
 
 ```text
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.6.sgmodule
 ```
 
-[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank.sgmodule)
+[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.6.sgmodule)
 
-模块自动从同一公开仓库下载 `scripts/CF-AutoRank.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
+模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.6.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
 
 安装时填写参数：
 
@@ -27,9 +27,19 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 参数由 Surge 保存，不会提交到本仓库。密码参数不等同于系统钥匙串；请勿分享参数截图、填好密码的模块或完整日志。密码包含双引号、反斜杠、换行，或原密码以 `b64:` 开头时，请填 `b64:` 加原密码的 UTF-8 Base64。Base64 仅解决参数转义，不是加密；不要使用在线网站编码密码。
 
+## 0.1.6 升级与仅改名
+
+0.1.6 调整了面板与脚本标识，并提供静态占位及独立版本资源。面板显示和后台运行仍受 Surge 与系统版本影响；可结合版本标识和进度面板确认状态。
+
+升级前等测速结束，停用旧 CF 模块，导入本版并填写原后台参数，只启用一份。这里的操作仅针对 CF 模块，不需要编辑主配置、策略组或代理模式。固定版本链接便于避开旧资源缓存；以后升级需要使用新版本链接。
+
+**只给当前 10 个节点改名**：在 Surge 脚本列表手动运行 `CF-AutoRank-Rename`。它不测速，只按现有顺序改为 `CF1-IP` 至 `CF10-IP`，保留 IP 和端口。收到名称核对成功提示后，再刷新原 CF 订阅。它保留上一次测速时间和网络记录，不把改名当成新测速。
+
+更新模块或刷新只读进度不会自动写后台。正常优选完成后也会使用新命名。保存校验现在同时检查原始订阅和 Surge 转换订阅的 IP、端口、顺序及名称；只有 IP 一致而名称仍旧不会报告成功。失败时仅在列表仍为本轮写入结果时请求恢复备份，不覆盖他人的修改。
+
 ## 使用与进度
 
-更新原模块到 0.1.5，保留后台参数，不要重复安装。若当前有测速任务，先等它完成或从脚本列表运行 `CF-Rank-Cancel` 并等当前请求结束，再更新，避免旧脚本与新版同时运行。
+更新原模块到 0.1.6，保留后台参数，不要重复安装。若当前有测速任务，先等它完成或从脚本列表运行 `CF-AutoRank-Cancel` 并等当前请求结束，再更新，避免旧脚本与新版同时运行。
 
 **Cloudflare 一键优选**：橙色云朵 `cloud.fill`，点击一次完成测速、前十筛选、后台保存和两种订阅核对。它显示上次成功的记录，示例如下（示例数据）：
 
@@ -49,7 +59,7 @@ Wi-Fi 家中网络 · 省流 · 123 MB
 - 进度和最后成功记录保存在本机，切走 App 或面板的旋转动画消失不等于记录消失。返回 Surge **策略页面**时会检查自动刷新；停留页面时如未刷新，可点击进度面板的刷新按钮。`update-interval=1` 不是保证后台每秒运行的定时器。
 - 连续 90 秒没有脚本活动，显示“可能暂停或中断”，不假装任务还在前进。3 分钟无活动后可点击主面板重新开始；新版旧任务恢复时会检查本机任务标识，不能再覆盖新任务状态或继续发起后台写入。它不是断点续测，重新开始会重新消耗测速流量。
 - 切到其他 App 后，系统可能限制或暂停脚本；模块能保留并显示最后进度，**不能保证后台持续测速**。希望完成整轮时仍请保持 Surge 前台、屏幕亮起、不切换网络。
-- 成功后在原 CF 订阅里手动刷新即可。取消、完整日志和单独核对仍可从脚本列表调用 `CF-Rank-Cancel`、`CF-Rank-Status`、`CF-Rank-Verify`。
+- 成功后在原 CF 订阅里手动刷新即可。取消、完整日志和单独核对仍可从脚本列表调用 `CF-AutoRank-Cancel`、`CF-Rank-Status`、`CF-AutoRank-Verify`。
 
 主面板只保留最近一次成功记录；下一轮失败或取消不会覆盖它。列表未变化时标注“上次核对”，避免把核对当作新发布。时间使用北京时间。Wi-Fi 名称记录的是**那次成功测速时的网络**，不会用现在的网络冒充历史记录；旧版没记录名称时显示“网络未记录”，系统未提供 SSID 时显示“Wi-Fi 名称不可用”。长名称会缩略，完整名称只在本机状态中保存，不发送到 GitHub 或 edgetunnel。
 

@@ -22,9 +22,9 @@ function endpoint(ip, port, pools) {
 }
 function parseList(text, pools) {
   return String(text).split(/\r?\n/).filter(x => x.trim() && !x.trim().startsWith('#')).map(line => {
-    const m = /^\s*(\d+\.\d+\.\d+\.\d+):(\d+)(?:#.*)?\s*$/.exec(line);
+    const m = /^\s*(\d+\.\d+\.\d+\.\d+):(\d+)(?:#(.*))?\s*$/.exec(line);
     assert(m, '自定义列表含有汇聚订阅、域名或未知格式；本工具仅管理 IPv4:TLS端口列表');
-    return endpoint(m[1],Number(m[2]),pools);
+    return {...endpoint(m[1],Number(m[2]),pools),name:(m[3]||'').trim()};
   });
 }
 function base64Decode(s) {
@@ -37,7 +37,7 @@ function settings(argument) {
   const parts=String(argument||'').split('|');
   const [action='status',host='',mode='lite',count='320']=parts;
   const password=parts.slice(4).join('|');
-  assert(['start','status','cancel','verify'].includes(action),'未知操作');
+  assert(['start','status','cancel','verify','rename'].includes(action),'未知操作');
   assert(/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(host),'请填写后台域名，不含 https:// 或路径');
   assert(MODES[mode],'测速档位只能为 lite 或 full');
   const limit=Number(count); assert(Number.isInteger(limit)&&limit>=40&&limit<=1024,'候选数量必须是 40–1024');
@@ -57,11 +57,11 @@ function configGuard(config,host) {
 }
 function parseRaw(text, cfg, pools) {
   return base64Decode(text).split(/\r?\n/).filter(x=>x.trim()).map(line=>{
-    const m=/^trojan:\/\/([^@]+)@(\d+\.\d+\.\d+\.\d+):(\d+)\?([^#]+)(?:#.*)?$/.exec(line);
+    const m=/^trojan:\/\/([^@]+)@(\d+\.\d+\.\d+\.\d+):(\d+)\?([^#]+)(?:#(.*))?$/.exec(line);
     assert(m,'原始订阅包含不支持的节点格式');
     const query={}; m[4].split('&').forEach(p=>{const i=p.indexOf('=');if(i>=0)query[decodeURIComponent(p.slice(0,i))]=decodeURIComponent(p.slice(i+1));});
     assert(decodeURIComponent(m[1])===cfg.password && query.sni===cfg.host && query.host===cfg.host && query.security==='tls' && query.type==='ws' && query.path===cfg.path,'订阅连接参数与后台不一致');
-    return endpoint(m[2],Number(m[3]),pools);
+    return {...endpoint(m[2],Number(m[3]),pools),name:decodeURIComponent(m[5]||'')};
   });
 }
 function parseSurge(text,cfg,pools) {
@@ -72,11 +72,13 @@ function parseSurge(text,cfg,pools) {
     const tail=line.slice(line.indexOf('=')+1).split(',').map(x=>x.trim());
     const fields={};tail.slice(3).forEach(x=>{const i=x.indexOf('=');if(i>=0)fields[x.slice(0,i).trim()]=x.slice(i+1).trim();});
     assert(fields.password===cfg.password&&fields.sni===cfg.host&&fields.ws==='true'&&fields['skip-cert-verify']!=='true'&&fields['ws-path']===cfg.path&&String(fields['ws-headers']||'').replace(/"/g,'')==='Host:'+cfg.host,'Surge 转换参数校验失败');
-    nodes.push(endpoint(tail[1],Number(tail[2]),pools));
+    nodes.push({...endpoint(tail[1],Number(tail[2]),pools),name:line.slice(0,line.indexOf('=')).trim()});
   }
   return nodes;
 }
 function sameEntries(a,b) { return a.length===b.length && a.every((e,i)=>e.key===b[i].key); }
+function sameNamedEntries(a,b) { return sameEntries(a,b)&&a.every((e,i)=>e.name===b[i].name); }
+function namedEntries(entries) { return entries.map((e,i)=>({...e,name:'CF'+(i+1)+'-'+e.ip})); }
 function candidates(current,pools,limit,rng=Math.random) {
   const out=[], seen=new Set();
   const add=e=>{if(!seen.has(e.key)){seen.add(e.key);out.push(e);}};
@@ -167,7 +169,8 @@ async function execute(env,opts,pools) {
   const selected=[];
   for(const e of topDistinct(ranking,ranking.length)) { const check=await connect(e,'youtube');if(check.valid)selected.push(e);if(selected.length===10)break; }
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,'稳定有效候选不足 10 个，保留原订阅');
-  const proposed=selected.map((e,i)=>e.key+'#CF'+(i+1)+'-'+e.ip).join('\n');
+  const expectedNames=namedEntries(selected);
+  const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
   assert(fresh.cfg.fingerprint===baseline.cfg.fingerprint&&fresh.list===baseline.list,'测速期间后台被改动，已保留当前设置');
@@ -177,9 +180,9 @@ async function execute(env,opts,pools) {
   async function verify(cfg,expected) {
     const a=await raw(cfg);
     const b=parseSurge(await req('GET','/sub?token='+cfg.token+'&surge'),cfg,pools);
-    return sameEntries(a,expected)&&sameEntries(b,expected);
+    return sameNamedEntries(a,expected)&&sameNamedEntries(b,expected);
   }
-  if(baseline.list.trim()===proposed) { outcome.verified=await verify(fresh.cfg,selected);assert(outcome.verified,'列表未变，但订阅转换未核对通过');return outcome; }
+  if(baseline.list.trim()===proposed) { outcome.verified=await verify(fresh.cfg,expectedNames);assert(outcome.verified,'列表未变，但订阅转换未核对通过');return outcome; }
   try {
     publishing=true;await update('保存与订阅验证',0,1);
     const response=await req('POST','/admin/ADD.txt',proposed);
@@ -189,7 +192,7 @@ async function execute(env,opts,pools) {
       if(wait)await env.sleep(wait);
       const check=await snapshot();
       if(check.cfg.fingerprint!==baseline.cfg.fingerprint)throw new Error('保存后后台连接参数发生变化');
-      if(check.list.trim()===proposed && await verify(check.cfg,selected)) {outcome.verified=true;break;}
+      if(check.list.trim()===proposed && await verify(check.cfg,expectedNames)) {outcome.verified=true;break;}
     }
     assert(outcome.verified,'订阅传播后仍未核对通过');
     outcome.publishedAt=env.now();await update('完成，订阅已验证',1,1);return outcome;
@@ -205,6 +208,55 @@ async function execute(env,opts,pools) {
     throw new Error('发布验证失败；'+rollback);
   }
 }
-const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,candidates,descriptor,downloadValid,topDistinct,execute};
+async function renameOnly(env,opts,pools) {
+  const startedAt=env.now(),runId=env.id();
+  const req=(method,path,body)=>env.control(method,path,body);
+  async function guard() { assert(env.now()-startedAt<10*60*1000,'改名操作已超时，请重新运行');assert(!await env.cancelled(runId),'已取消，未改名'); }
+  async function snapshot() {
+    const cfg=configGuard(await req('GET','/admin/config.json'),opts.host);
+    const list=await req('GET','/admin/ADD.txt'),entries=parseList(list,pools);
+    assert(entries.length===10&&new Set(entries.map(e=>e.ip)).size===10,'现有列表不是 10 个不同 IP，保留原列表');
+    return {cfg,list,entries};
+  }
+  async function subscriptions(cfg,expected) {
+    const raw=parseRaw(await req('GET','/sub?token='+cfg.token+'&b64'),cfg,pools);
+    const surge=parseSurge(await req('GET','/sub?token='+cfg.token+'&surge'),cfg,pools);
+    return sameNamedEntries(raw,expected)&&sameNamedEntries(surge,expected);
+  }
+  await env.login(opts.host,opts.password);
+  const baseline=await snapshot();
+  assert(await subscriptions(baseline.cfg,baseline.entries),'后台与实际订阅尚未一致，暂不改名');
+  await env.backup({host:opts.host,list:baseline.list,entries:baseline.entries,createdAt:startedAt});
+  const selected=namedEntries(baseline.entries),proposed=selected.map(e=>e.key+'#'+e.name).join('\n');
+  const outcome={runId,startedAt,selected,changed:false,verified:false};
+  await guard();
+  const fresh=await snapshot();
+  assert(fresh.cfg.fingerprint===baseline.cfg.fingerprint&&fresh.list===baseline.list,'操作期间后台被改动，已保留当前设置');
+  assert(await subscriptions(fresh.cfg,baseline.entries),'操作期间实际订阅已改变，跳过改名');
+  if(baseline.list.trim()===proposed)return {...outcome,verified:true};
+  await guard();
+  try {
+    const response=await req('POST','/admin/ADD.txt',proposed);
+    assert(response&&response.success===true,'后台未确认改名成功');outcome.changed=true;
+    for(const wait of [0,3000,12000,30000,60000]) {
+      if(wait)await env.sleep(wait);
+      const check=await snapshot();
+      assert(check.cfg.fingerprint===baseline.cfg.fingerprint&&check.list.trim()===proposed,'改名后后台发生变化');
+      if(await subscriptions(check.cfg,selected))return {...outcome,verified:true,finishedAt:env.now()};
+    }
+    throw new Error('原始或 Surge 订阅名称尚未生效');
+  } catch(error) {
+    let rollback='未覆盖其他修改';
+    try {
+      const check=await snapshot();
+      if(check.cfg.fingerprint===baseline.cfg.fingerprint&&check.list.trim()===proposed) {
+        const restored=await req('POST','/admin/ADD.txt',baseline.list);
+        rollback=restored&&restored.success===true?'已请求恢复原名称，需检查订阅传播':'恢复原名称未获确认';
+      }
+    } catch(_) {rollback='无法确认恢复，请检查后台';}
+    throw new Error('改名验证失败；'+rollback);
+  }
+}
+const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,candidates,descriptor,downloadValid,topDistinct,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);
