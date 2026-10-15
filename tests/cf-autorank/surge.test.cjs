@@ -23,6 +23,8 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
   } else {
    assert.match(options['policy-descriptor'],/^CF-Probe-.* = trojan,/);assert.equal(options.policy,undefined);assert.equal(options['auto-cookie'],false);
    if(options.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(options.headers.Range);status=206;data={byteLength:Number(m[2])-Number(m[1])+1};headers={'Content-Range':`bytes ${m[1]}-${m[2]}/200000000`};}
+   else if(options.url.startsWith('https://api.ipify.org?')){status=200;data=JSON.stringify({ip:'8.8.4.4'});}
+   else if(options.url==='https://ipwho.is/8.8.4.4?fields=ip,success,country_code'){status=200;data=JSON.stringify({ip:'8.8.4.4',success:true,country_code:'JP'});}
    else status=204;
   }
   if(harness.onRequest)harness.onRequest({method,options,store,requests});
@@ -30,6 +32,7 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
  }
  let settle;const completion=new Promise(resolve=>{settle=resolve;});
  const ctx={console:{log:s=>logs.push(String(s))},Date,Math,Uint8Array,Promise,setTimeout,
+  $utils:{geoip:ip=>{assert.equal(ip,'8.8.4.4');return harness.noGeoIP?null:'US';}},
   $argument:argument,$trigger:trigger,$input:{purpose:'panel'},$network:harness.network||{v4:{primaryInterface:'pdp_ip0',primaryAddress:'192.0.2.10'}},
   $persistentStore:{read:k=>store[k]||null,write:(v,k)=>{store[k]=v;states.push({key:k,value:JSON.parse(v)});return true;}},
   $notification:{post:()=>{}},$done:r=>{output=r;doneCount++;settle();},
@@ -95,17 +98,25 @@ test('manual restart replaces a stale run and saves successful network metadata'
  assert.equal(saved.lastSuccess.network.name,'Test Wi-Fi');assert.equal(r.writes.length,1);
  assert(r.states.some(x=>x.key===key&&x.value.running&&x.value.network.name==='Test Wi-Fi'));
 });
-test('rename action uses direct backend only and preserves previous speed-test history',async()=>{
+test('rename uses explicit CF exit probes and direct backend while preserving speed-test history',async()=>{
  const lastSuccess={at:Date.now()-3600000,network:{kind:'wifi',name:'Earlier Wi-Fi'},mode:'lite',count:10,bytes:100000000,changed:true};
  const r=await run('rename|example.net|lite|40|local-secret','editor',{'CFEdgeRank_example.net':JSON.stringify({lastSuccess})});
- assert.equal(r.writes.length,1);assert(r.requests.every(x=>x.policy==='DIRECT'&&!x.descriptor));
+ assert.equal(r.writes.length,1);assert(r.requests.filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy==='DIRECT'&&!x.descriptor));
+ const probes=r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?'));assert.equal(probes.length,20);assert(probes.every(x=>x.descriptor&&!x.policy));
  const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.running,false);assert.equal(state.stage,'名称已核对');
  assert.deepEqual(state.lastSuccess,lastSuccess);assert.equal(state.nameResult.verified,true);
- assert.match(r.writes[0],/^8\.35\.211\.1:2053#CF1-8\.35\.211\.1\n/);
+ assert.match(r.writes[0],/^8\.35\.211\.1:2053#🇺🇸 CF1-8\.35\.211\.1\n/);
 });
 test('automatic refresh never renames the backend',async()=>{
  const r=await run('rename|example.net|lite|40|local-secret','auto-interval');
  assert.equal(r.requests.length,0);assert.equal(r.writes.length,0);
+});
+test('adapter supports online country lookup when the native GeoIP database is empty',async()=>{
+ const r=await run('rename|example.net|lite|40|local-secret','editor',{}, {noGeoIP:true});
+ const lookups=r.requests.filter(x=>x.url.startsWith('https://ipwho.is/'));
+ assert.equal(lookups.length,1);assert(lookups[0].descriptor&&!lookups[0].policy);
+ assert.equal(r.writes.length,1);assert.match(r.writes[0],/#🇯🇵 CF1-/);
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.nameResult.verified,true);
 });
 test('published module has static fallback panels and resolves every action to its versioned bundle',()=>{
  const base=path.resolve(root,'../..'),moduleText=fs.readFileSync(path.join(base,'modules/CF-AutoRank.sgmodule'),'utf8');

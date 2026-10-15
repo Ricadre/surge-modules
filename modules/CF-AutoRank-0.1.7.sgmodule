@@ -1,0 +1,17 @@
+#!name=Cloudflare 一键优选（预览版）
+#!version=0.1.7
+#!desc=两个面板，带静态占位与独立脚本版本。按实测出口国家加国旗，未知用🌐；支持完整优选和检测出口后改名。省流约100–200MB，完整约300–600MB。
+#!arguments=backend,mode:lite,candidates:320,admin_password
+#!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。候选数40–1024。
+
+[Script]
+CF-AutoRank-Run = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank-0.1.7.js,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-AutoRank-Status = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank-0.1.7.js,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank-0.1.7.js,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Verify = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank-0.1.7.js,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+
+CF-AutoRank-Rename = type=generic,script-path=https://raw.githubusercontent.com/Ricadre/surge-modules/main/scripts/CF-AutoRank-0.1.7.js,timeout=600,engine=webview,argument="rename|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+
+[Panel]
+CF-AutoRank-Overview = title="Cloudflare 一键优选",content="v0.1.7 模块已载入\n点击开始；进度见下方",style=info,icon=cloud.fill,icon-color=#F48120,script-name=CF-AutoRank-Run,update-interval=1
+CF-AutoRank-Progress = title="Cloudflare 测速进度",content="v0.1.7 模块已载入\n刷新查看进度",style=info,icon=chart.bar.fill,icon-color=#F48120,script-name=CF-AutoRank-Status,update-interval=1

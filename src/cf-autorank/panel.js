@@ -46,7 +46,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.6 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.7 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const traffic=Math.round((s.bytes||0)/1000000)+' MB';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
@@ -57,7 +57,7 @@ function progressContent(s,now) {
     const percent=s.total?' · '+Math.min(100,Math.floor((s.done||0)/s.total*100))+'%':'';
     return stage+percent+'\n'+duration(now-(s.startedAt||now))+' · '+traffic+' · '+duration(age)+'前进展';
   }
-  if(s.stage==='名称已核对')return '10 个名称已核对 · CF1-IP 至 CF10-IP\n未运行测速 · 请刷新订阅';
+  if(s.stage==='名称已核对')return '10 个名称已核对 · 国旗 '+(s.nameResult?s.nameResult.selected.filter(e=>e.egress&&e.egress.country).length:0)+'/10\n未运行下载测速 · 请刷新订阅';
   if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对\n'
     +duration((s.updatedAt||now)-(s.startedAt||s.result&&s.result.startedAt||s.updatedAt||now))+' · '+traffic+' · 请刷新订阅';
   return s.stage+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');

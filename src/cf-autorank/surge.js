@@ -6,7 +6,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.6';
+const UA='CF-Edge-AutoRank/0.1.7';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -94,6 +94,7 @@ try {
     networkKey:()=>{const n=typeof $network==='object'?$network:localNetwork;return JSON.stringify([n.wifi&&n.wifi.ssid,n.v4&&n.v4.primaryInterface,n.v4&&n.v4.primaryAddress]);},
     sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms)),
     login,control,
+    geoip:ip=>typeof $utils!=='undefined'&&typeof $utils.geoip==='function'?$utils.geoip(ip):'',
     probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
       'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
     cancelled:async()=>!isOwner()||!!read().cancelRequested,
@@ -103,7 +104,8 @@ try {
   };
   if(opts.action==='rename') {
     const renamed=await core.renameOnly(env,opts,CF_RANK_POOLS);requireOwner();
-    const message='10 个名称已核对为 CF1-IP 至 CF10-IP，IP、端口和顺序未变。请刷新原订阅。';
+    const known=renamed.selected.filter(e=>e.egress&&e.egress.country).length;
+    const message='10 个名称已核对，'+known+' 个出口国家已识别，'+(10-known)+' 个未知以 🌐 标记。IP、端口和顺序未变。请刷新原订阅。';
     write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
     done('Cloudflare 节点名称已核对',message,false,true);return;
   }

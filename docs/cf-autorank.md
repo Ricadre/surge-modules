@@ -1,20 +1,20 @@
-# Cloudflare 一键优选 · 0.1.6 预览版
+# Cloudflare 一键优选 · 0.1.7 预览版
 
 在 iPhone 或 Mac 的当前网络里测试候选 CF 入口，复测后选出 10 个不同 IP，自动保存到已有 edgetunnel 后台的自定义列表。成功提示之后，手动刷新原有 Surge 订阅即可。
 
-节点按本轮排名命名为 `CF1-IP` 到 `CF10-IP`，例如 `CF1-104.16.1.1`。IP 表示接入地址；本工具不检测出口国家，不会根据 IP 归属库添加国家标签。更新模块后，下一次成功优选会使用新名称；单独更新模块不会改动现有订阅。
+节点名称为 `国旗 CF1-IP` 至 `国旗 CF10-IP`，例如 `🇯🇵 CF1-104.16.1.1`（格式示例，不是这个 IP 的实测结果）。国旗取自经该节点访问检测服务时观察到的出口 IP 的国家；名称中的 IP 仍是 CF 接入地址。
 
 ## 远程安装
 
 在 Surge 的模块页面选择通过 URL 安装，粘贴：
 
 ```text
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.6.sgmodule
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.7.sgmodule
 ```
 
-[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.6.sgmodule)
+[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.7.sgmodule)
 
-模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.6.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
+模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.7.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
 
 安装时填写参数：
 
@@ -27,19 +27,31 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 参数由 Surge 保存，不会提交到本仓库。密码参数不等同于系统钥匙串；请勿分享参数截图、填好密码的模块或完整日志。密码包含双引号、反斜杠、换行，或原密码以 `b64:` 开头时，请填 `b64:` 加原密码的 UTF-8 Base64。Base64 仅解决参数转义，不是加密；不要使用在线网站编码密码。
 
-## 0.1.6 升级与仅改名
+## 0.1.7 出口国旗
+
+整轮优选选出前十后，再逐个通过对应的临时 CF 策略访问 `https://api.ipify.org?format=json`，取得检测服务看到的 IPv4 出口地址，再用 Surge `$utils.geoip()` 本地查询该出口 IP 的国家代码。本地库无结果时，通过相同 CF 策略请求 `https://ipwho.is/出口IP?fields=ip,success,country_code`，要求返回 IP 与实测值一致。不会把接入 IP 的归属或当前 VPS 策略组的出口当成结果。查询服务仅接收出口公网 IP，不携带后台密码或订阅 token；认证信息仅用于连接你自己的节点和后台。
+
+每个入口连续检测两次，每次请求最多 8 秒，出口检测使用不同查询参数和禁用缓存头。两次国家代码有效且一致才显示国旗；超时、异常响应、私有地址、国家查询均失败或国家不一致均显示 `🌐`。新一轮会重新检测，不沿用上次国旗。查询不同但同属一个国家的出口 IP 可显示同一个国旗。在线国家查询的成功结果仅在本轮按出口 IP 复用，降低额外请求；限流时不填入猜测值。
+
+只想给当前 10 个节点补国旗：运行脚本 `CF-AutoRank-Rename`。它做 20 次小型出口检测请求，必要时追加在线国家查询，不进行带宽下载测速，保留 IP、端口和顺序；成功后刷新原 CF 订阅。名称和 emoji 均通过原始及 Surge 订阅校验。后台保存的只有带旗名称与原接入地址，出口样本保存在本机记录中。
+
+国旗表示检测服务在当前连接中观察到的出口 IP 对应国家，依赖本地或在线 GeoIP 数据，不保证其他网站（包括 YouTube）或以后连接的出口地区相同。升级模块本身不会改后台；必须手动运行完整优选或上述更新名称脚本。面板显示和脚本后台执行受 Surge 与操作系统版本影响。
+
+参考：[ipify 官方 API](https://www.ipify.org/)、[Surge GeoIP 与临时策略 API](https://manual.nssurge.com/scripting/api.html)、[IPWhois 官方 API](https://ipwhois.io/documentation)。
+
+## 0.1.6 升级与仅改名（历史记录）
 
 0.1.6 调整了面板与脚本标识，并提供静态占位及独立版本资源。面板显示和后台运行仍受 Surge 与系统版本影响；可结合版本标识和进度面板确认状态。
 
 升级前等测速结束，停用旧 CF 模块，导入本版并填写原后台参数，只启用一份。这里的操作仅针对 CF 模块，不需要编辑主配置、策略组或代理模式。固定版本链接便于避开旧资源缓存；以后升级需要使用新版本链接。
 
-**只给当前 10 个节点改名**：在 Surge 脚本列表手动运行 `CF-AutoRank-Rename`。它不测速，只按现有顺序改为 `CF1-IP` 至 `CF10-IP`，保留 IP 和端口。收到名称核对成功提示后，再刷新原 CF 订阅。它保留上一次测速时间和网络记录，不把改名当成新测速。
+**0.1.6 仅改名行为（0.1.7 已增加上述出口检测）**：在 Surge 脚本列表手动运行 `CF-AutoRank-Rename`。它不测速，只按现有顺序改为 `CF1-IP` 至 `CF10-IP`，保留 IP 和端口。收到名称核对成功提示后，再刷新原 CF 订阅。它保留上一次测速时间和网络记录，不把改名当成新测速。
 
 更新模块或刷新只读进度不会自动写后台。正常优选完成后也会使用新命名。保存校验现在同时检查原始订阅和 Surge 转换订阅的 IP、端口、顺序及名称；只有 IP 一致而名称仍旧不会报告成功。失败时仅在列表仍为本轮写入结果时请求恢复备份，不覆盖他人的修改。
 
 ## 使用与进度
 
-更新原模块到 0.1.6，保留后台参数，不要重复安装。若当前有测速任务，先等它完成或从脚本列表运行 `CF-AutoRank-Cancel` 并等当前请求结束，再更新，避免旧脚本与新版同时运行。
+更新原模块到 0.1.7，保留后台参数，不要重复安装。若当前有测速任务，先等它完成或从脚本列表运行 `CF-AutoRank-Cancel` 并等当前请求结束，再更新，避免旧脚本与新版同时运行。
 
 **Cloudflare 一键优选**：橙色云朵 `cloud.fill`，点击一次完成测速、前十筛选、后台保存和两种订阅核对。它显示上次成功的记录，示例如下（示例数据）：
 

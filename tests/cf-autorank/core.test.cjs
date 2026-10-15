@@ -2,12 +2,13 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
 function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
 function fixture(options={}) {
- let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
- const original=list,posts=[],calls=[],progress=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
+ let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`🇺🇸 CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
+ const original=list,posts=[],calls=[],progress=[],geoCalls=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
  const cfg=config();
  const env={
   now:()=>time,id:()=>String(++id),random:()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296;},
   networkKey:()=>options.networkChange&&probes>8?'new':'old',
+  geoip:ip=>{geoCalls.push(ip);return options.geoipUnknown?'':'US';},
   cancelled:async()=>options.cancel&&probes>8,
   sleep:async ms=>{time+=ms;},
   progress:async p=>progress.push({...p}),backup:async b=>{assert.equal(b.list,original);},
@@ -27,6 +28,7 @@ function fixture(options={}) {
    if(options.expired&&probes>8)time+=3600000;
    assert.match(spec.descriptor,/^CF-Probe-.* = trojan, /);assert.match(spec.descriptor,/skip-cert-verify=false/);
    if(options.allFail)return {error:'timeout',status:0,bytes:0,ms:4000,headers:{}};
+   if(spec.url.startsWith('https://api.ipify.org?')){assert.equal(spec.headers.Range,undefined);return {status:200,data:JSON.stringify({ip:'8.8.4.4'}),ms:100,error:null};}
    if(spec.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(spec.headers.Range);const size=Number(m[2])-Number(m[1])+1;
     if(options.ignoredRange)return {status:200,bytes:size,ms:100,headers:{}};
     return {status:206,bytes:size,ms:100+(probes%13)*10,headers:{'Content-Range':`bytes ${m[1]}-${m[2]}/200000000`}};
@@ -34,7 +36,7 @@ function fixture(options={}) {
    return {status:204,ms:250,error:null,headers:{}};
   }
  };
- return {env,opts:{host:HOST,password:'local-only',limit:40,mode:'lite'},posts,calls,original,progress,getList:()=>list};
+ return {env,opts:{host:HOST,password:'local-only',limit:40,mode:'lite'},posts,calls,original,progress,geoCalls,getList:()=>list};
 }
 test('settings preserves separators in password and validates host',()=>{
  assert.equal(C.settings('start|example.net|lite|320|a|b&c').password,'a|b&c');
@@ -80,12 +82,13 @@ test('raw subscription requires matching credentials and TLS host',()=>{
  const cfg=C.configGuard(config(),HOST);
  assert.throws(()=>C.parseRaw(Buffer.from('trojan://wrong@8.35.211.1:2053?security=tls&type=ws&host=example.net&sni=example.net&path=%2F').toString('base64'),cfg,pools));
 });
-test('rename preserves every endpoint and its order without any probes',async()=>{
- const f=fixture();f.env.probe=async()=>{throw new Error('Rename must not test or download');};
+test('rename preserves every endpoint and order with only small exit-IP probes',async()=>{
+ const f=fixture();const probe=f.env.probe;f.env.probe=async spec=>{assert(spec.url.startsWith('https://api.ipify.org?'));return probe(spec);};
  const before=C.parseList(f.original,pools);const r=await C.renameOnly(f.env,f.opts,pools);
  assert(r.changed&&r.verified);assert.equal(f.posts.length,1);
  const after=C.parseList(f.getList(),pools);assert(C.sameEntries(before,after));
- assert.deepEqual(after.map(e=>e.name),Array.from({length:10},(_,i)=>`CF${i+1}-8.35.211.${i+1}`));
+ assert.deepEqual(after.map(e=>e.name),Array.from({length:10},(_,i)=>`🇺🇸 CF${i+1}-8.35.211.${i+1}`));
+ assert.equal(f.geoCalls.length,20);assert(f.geoCalls.every(ip=>ip==='8.8.4.4'));
 });
 test('rename is idempotent and checks both subscription formats',async()=>{
  const f=fixture({alreadyNamed:true});const r=await C.renameOnly(f.env,f.opts,pools);
@@ -102,4 +105,94 @@ for(const key of ['rawNameFail','surgeNameFail'])test('unchanged IPs with stale 
   const f=fixture({[key]:true});await assert.rejects(()=>action(f.env,f.opts,pools),/验证失败/);
   assert.equal(f.posts.length,2);assert.equal(f.getList(),f.original);
  }
+});
+test('exit country comes from two observed public IPs, not the entrance or existing name',async()=>{
+ const f=fixture(),e=C.parseList(f.original,pools)[0],cfg=C.configGuard(config(),HOST);let count=0;
+ f.env.probe=async spec=>{assert.equal(spec.method,'GET');assert.match(spec.descriptor,new RegExp(e.ip.replace(/\./g,'\\.')));assert.equal(spec.headers.Range,undefined);return {status:200,data:JSON.stringify({ip:++count===1?'8.8.4.4':'1.1.1.1'})};};
+ const lookedUp=[];f.env.geoip=ip=>{lookedUp.push(ip);return 'JP';};
+ const result=await C.exitCountry(f.env,e,cfg,async()=>{});
+ assert.equal(result.country,'JP');assert.deepEqual(lookedUp,['8.8.4.4','1.1.1.1']);
+ assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'🇯🇵 CF1-8.35.211.1');
+});
+test('different exit countries are explicitly unknown, never averaged or inherited',async()=>{
+ const f=fixture(),e=C.parseList(f.original,pools)[0];let n=0;
+ f.env.geoip=()=>++n===1?'JP':'US';
+ const result=await C.exitCountry(f.env,e,C.configGuard(config(),HOST),async()=>{});
+ assert.equal(result.status,'inconsistent');assert.equal(result.country,null);
+ assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'🌐 CF1-8.35.211.1');
+});
+test('private, malformed, timed out, redirected and oversized IP replies cannot get a country flag',async()=>{
+ for(const response of [
+  {status:200,data:'{"ip":"192.168.1.1"}'},{status:200,data:'{"ip":"203.0.113.1"}'},
+  {status:200,data:'<html>challenge</html>'},{status:200,error:'timeout',data:'{"ip":"8.8.4.4"}'},
+  {status:302,data:'{"ip":"8.8.4.4"}'},{status:200,data:' '.repeat(1024)+'{"ip":"8.8.4.4"}'}
+ ]) {
+  const f=fixture();f.env.probe=async()=>response;f.env.geoip=()=>{throw new Error('must not geolocate invalid reply');};
+  const result=await C.exitCountry(f.env,C.parseList(f.original,pools)[0],C.configGuard(config(),HOST),async()=>{});
+  assert.equal(result.country,null);assert.equal(result.status,'unknown');
+ }
+});
+test('unknown detection replaces an old flag and still preserves every endpoint',async()=>{
+ const f=fixture({alreadyNamed:true,geoipUnknown:true});const r=await C.renameOnly(f.env,f.opts,pools);
+ assert(r.verified);assert(C.sameEntries(C.parseList(f.original,pools),r.selected));
+ assert(r.selected.every(e=>e.name.startsWith('🌐 CF')&&e.egress.country===null));
+});
+test('missing local GeoIP falls back through the same CF node and caches only within the run',async()=>{
+ const f=fixture({geoipUnknown:true}),probe=f.env.probe;let lookups=0,observations=0;
+ f.env.probe=async spec=>{
+  assert.match(spec.descriptor,/^CF-Probe-/);assert.equal(spec.policy,undefined);
+  if(spec.url.startsWith('https://api.ipify.org?')){observations++;return probe(spec);}
+  assert.equal(spec.url,'https://ipwho.is/8.8.4.4?fields=ip,success,country_code');
+  lookups++;return {status:200,data:JSON.stringify({ip:'8.8.4.4',success:true,country_code:'JP'})};
+ };
+ const first=await C.renameOnly(f.env,f.opts,pools);
+ assert(first.verified);assert.equal(observations,20);assert.equal(lookups,1);
+ assert(first.selected.every(e=>e.name.startsWith('🇯🇵 CF')&&e.egress.samples.every(s=>s.countrySource==='IPWhois')));
+ f.env.backup=async b=>assert.equal(b.list,f.getList());
+ const second=await C.renameOnly(f.env,f.opts,pools);
+ assert(second.verified&&!second.changed);assert.equal(observations,40);assert.equal(lookups,2);
+});
+test('online GeoIP rejects wrong IP, unsuccessful, rate-limited, malformed and invalid-country replies',async()=>{
+ for(const response of [
+  {status:200,data:'{"ip":"1.1.1.1","success":true,"country_code":"JP"}'},
+  {status:200,data:'{"ip":"8.8.4.4","success":false,"country_code":"JP"}'},
+  {status:429,data:'{"ip":"8.8.4.4","success":true,"country_code":"JP"}'},
+  {status:200,error:'timeout',data:'{"ip":"8.8.4.4","success":true,"country_code":"JP"}'},
+  {status:200,data:'{"ip":"8.8.4.4","success":true,"country_code":"XX"}'},
+  {status:200,data:'<html>challenge</html>'}
+ ]) {
+  const f=fixture({geoipUnknown:true}),probe=f.env.probe;
+  f.env.probe=spec=>spec.url.startsWith('https://api.ipify.org?')?probe(spec):Promise.resolve(response);
+  const result=await C.exitCountry(f.env,C.parseList(f.original,pools)[0],C.configGuard(config(),HOST),async()=>{});
+  assert.equal(result.country,null);assert.equal(result.status,'unknown');
+ }
+});
+test('a failed fallback is retried and cannot lend a country to an unconfirmed observation',async()=>{
+ const f=fixture({geoipUnknown:true}),probe=f.env.probe;let lookups=0;
+ f.env.probe=spec=>spec.url.startsWith('https://api.ipify.org?')?probe(spec):Promise.resolve(++lookups===1?
+  {status:429,data:''}:{status:200,data:'{"ip":"8.8.4.4","success":true,"country_code":"JP"}'});
+ const result=await C.exitCountry(f.env,C.parseList(f.original,pools)[0],C.configGuard(config(),HOST),async()=>{});
+ assert.equal(lookups,2);assert.equal(result.country,null);assert.equal(result.samples[1].country,'JP');
+});
+test('cancellation during online lookup prevents a backend write',async()=>{
+ const f=fixture({geoipUnknown:true}),probe=f.env.probe;let cancelled=false;
+ f.env.cancelled=async()=>cancelled;
+ f.env.probe=async spec=>{
+  if(spec.url.startsWith('https://api.ipify.org?'))return probe(spec);
+  cancelled=true;return {status:200,data:'{"ip":"8.8.4.4","success":true,"country_code":"JP"}'};
+ };
+ await assert.rejects(()=>C.renameOnly(f.env,f.opts,pools),/取消/);assert.equal(f.posts.length,0);
+});
+test('network change or cancellation during exit detection prevents any rename',async()=>{
+ for(const options of [{networkChange:true},{cancel:true}]) {
+  const f=fixture(options);await assert.rejects(()=>C.renameOnly(f.env,f.opts,pools),/网络变化|取消/);assert.equal(f.posts.length,0);
+ }
+});
+test('literal UTF-8 flags and percent-encoded flags both survive raw subscription parsing',()=>{
+ const cfg=C.configGuard(config(),HOST),name='🇯🇵 CF1-8.35.211.1';
+ for(const fragment of [name,encodeURIComponent(name)]) {
+  const raw=`trojan://${PASS}@8.35.211.1:2053?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${fragment}`;
+  assert.equal(C.parseRaw(Buffer.from(raw).toString('base64'),cfg,pools)[0].name,name);
+ }
+ assert.equal(C.countryFlag('XX'),'🌐');assert.equal(C.countryFlag('ZZ'),'🌐');assert.equal(C.countryFlag('bad'),'🌐');
 });
