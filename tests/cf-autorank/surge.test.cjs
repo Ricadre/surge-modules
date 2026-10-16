@@ -60,8 +60,11 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
  assert.equal(verified.poolInfo.source,'live-text');
  assert.equal(verified.result.candidateSources.current,10);
- assert.equal(verified.result.candidateSources.official,23);
- assert.equal(verified.result.candidateSources.legacy,7);
+ assert.equal(verified.result.candidateSources.official,113);
+ assert.equal(verified.result.candidateSources.legacy,37);
+ assert.equal(verified.result.candidateCount,160);assert.equal(verified.result.downloadCandidateCount,40);
+ const light=r.requests.filter(x=>x.url.includes('cf_rank_light='));assert.equal(light.length,320);
+ assert(light.every(x=>x.method==='HEAD'&&x.descriptor&&!x.policy));
 });
 test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
  const sharedStore={};
@@ -117,7 +120,7 @@ test('returning to status reads the saved in-flight progress without credentials
   if(options['policy-descriptor']&&!check)check=run('status|example.net|lite|40|','auto-interval',{}, {sharedStore:store});
  }});
  const status=await check;
- assert.equal(status.requests.length,0);assert.match(status.output.content,/连通检查/);
+ assert.equal(status.requests.length,0);assert.match(status.output.content,/轻量初筛/);
  assert.equal(status.output.title,'Cloudflare 测速进度');assert.equal(r.writes.length,1);
 });
 test('a failed later run preserves last success time and network for the overview',async()=>{

@@ -69,8 +69,61 @@ test('top ten deduplicates IPs and uses conservative scores',()=>{
 test('successful end-to-end mock publishes only ADD.txt and verifies both subscription formats',async()=>{
  const f=fixture();const r=await C.execute(f.env,f.opts,pools);
  assert(r.changed&&r.verified);assert.equal(r.selected.length,10);assert.equal(new Set(r.selected.map(x=>x.ip)).size,10);assert.equal(f.posts.length,1);
- assert.equal(r.candidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
+ assert.equal(r.candidateCount,160);assert.equal(r.downloadCandidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
  assert(r.selected.every(x=>x.samples.length===2));
+});
+test('default lite screens 1280 with small HEAD requests then limits bandwidth downloads to 320',async()=>{
+ const f=fixture(),original=f.env.probe,light=[],downloads=[];let active=0,maxActive=0;
+ f.opts.limit=320;
+ f.env.probe=async spec=>{
+  if(spec.url.includes('cf_rank_light=')) {
+   assert.equal(spec.method,'HEAD');assert.equal(spec.headers.Range,undefined);assert(!spec.binary);
+   assert.equal(spec.timeout,4);assert.equal(spec.headers['Cache-Control'],'no-cache');
+   light.push(spec);active++;maxActive=Math.max(maxActive,active);await Promise.resolve();
+   try{return await original(spec);}finally{active--;}
+  }
+  if(spec.headers.Range)downloads.push(spec);
+  return original(spec);
+ };
+ const r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.candidateCount,1280);assert.equal(r.lightRequests,2560);
+ assert.equal(light.length,2560);assert.equal(new Set(light.map(x=>x.url)).size,2560);assert(maxActive<=8&&maxActive>1);
+ assert.equal(r.downloadCandidateCount,320);assert.deepEqual(r.downloadReasons,{current:10,latency:248,exploration:62});
+ const sizes=downloads.map(s=>{const m=/bytes=(\d+)-(\d+)/.exec(s.headers.Range);return Number(m[2])-Number(m[1])+1;});
+ assert.equal(sizes.filter(n=>n===131072).length,320);assert.equal(sizes.filter(n=>n===2000000).length,48);
+ assert.equal(r.bytes,320*131072+48*2000000);
+ assert.equal(new Set(r.downloadCandidates.map(e=>e.ip)).size,320);
+ assert(f.progress.some(p=>p.stage==='低流量连通与延迟初筛'&&p.total===1280&&p.done===1280));
+ assert(f.progress.some(p=>p.stage==='下载初筛'&&p.total===320));
+});
+test('first failed light probe skips its second; too few stable entries never download or publish',async()=>{
+ const f=fixture(),attempts=new Map();let downloads=0;
+ f.env.probe=async spec=>{
+  if(spec.headers.Range){downloads++;throw new Error('must not download');}
+  assert(spec.url.includes('cf_rank_light='));const n=(attempts.get(spec.descriptor)||0)+1;attempts.set(spec.descriptor,n);
+  return {status:503,ms:100};
+ };
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/不足 10/);
+ assert.equal(attempts.size,160);assert([...attempts.values()].every(n=>n===1));assert.equal(downloads,0);assert.equal(f.posts.length,0);
+});
+test('flaky second light responses cannot enter the download shortlist',async()=>{
+ const f=fixture(),probe=f.env.probe,attempts=new Map(),failed=new Set(),downloaded=new Set();
+ f.env.probe=async spec=>{
+  if(spec.url.includes('cf_rank_light=')) {
+   const n=(attempts.get(spec.descriptor)||0)+1;attempts.set(spec.descriptor,n);
+   if(n===2&&attempts.size%3===0){failed.add(spec.descriptor);return {status:204,ms:100,error:'timeout'};}
+  }
+  if(spec.headers.Range)downloaded.add(spec.descriptor);
+  return probe(spec);
+ };
+ const r=await C.execute(f.env,f.opts,pools);assert(r.verified);assert(failed.size>0);
+ assert([...failed].every(d=>!downloaded.has(d)));
+});
+test('fatal probe failure stops scheduling new light requests and drains in-flight work before exit',async()=>{
+ const f=fixture();let active=0,started=0;
+ f.env.probe=async()=>{started++;active++;await Promise.resolve();active--;throw new Error('probe failure');};
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/probe failure/);
+ assert(started<=8);assert.equal(active,0);assert.equal(f.posts.length,0);
 });
 test('converter strips legacy flag prefixes but preserves bracketed countries and unknown marker',()=>{
  for(const flag of ['🇺🇸','🇯🇵','🌐']) {

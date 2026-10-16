@@ -8,7 +8,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.9';
+const UA='CF-Edge-AutoRank/0.1.10';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -29,7 +29,7 @@ function done(title,content,error,notify) {
 }
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
-  const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载数据约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.poolInfo)lines.push('候选池：'+poolSource.label(s.poolInfo)+(s.poolInfo.fetchedAt?' · 获取于 '+ui.dateText(s.poolInfo.fetchedAt):''));
@@ -132,7 +132,7 @@ try {
   const result=await core.execute(env,opts,CF_RANK_POOLS,poolInfo);
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
-  const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
+  const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,changed:result.changed,elapsedMs:finishedAt-started};
   write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});

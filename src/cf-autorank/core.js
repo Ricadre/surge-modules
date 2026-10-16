@@ -4,6 +4,7 @@ const MODES = {
   lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24 },
   full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24 }
 };
+const LIGHT_SCREEN={lite:{multiplier:4,concurrency:8,timeout:4},full:{multiplier:8,concurrency:8,timeout:4},maxCandidates:4096};
 const TLS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 function assert(ok, message) { if (!ok) throw new Error(message); }
 function ipNumber(ip) {
@@ -186,9 +187,34 @@ function downloadValid(result,start,size) {
   return {valid:!!valid,bytes,ms:result.ms,status:result.status||0,partial:!!valid&&bytes<size,
     mbps:valid?Number((bytes*8/result.ms/1000).toFixed(3)):0};
 }
-async function pool(items,n,fn) { let i=0; await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{while(i<items.length){const index=i++;await fn(items[index],index);}})); }
+async function pool(items,n,fn) {
+  let i=0,failure=null,failed=false;
+  await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{
+    while(i<items.length&&!failed){const index=i++;try{await fn(items[index],index);}catch(error){if(!failed){failed=true;failure=error||new Error('并发请求处理异常');}}}
+  }));
+  if(failed)throw failure;
+}
 function median(list){const s=list.slice().sort((a,b)=>a-b);if(!s.length)return null;const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 function topDistinct(rows,count) { const sorted=rows.filter(x=>x.valid).slice().sort((a,b)=>b.score-a.score||(a.latency||0)-(b.latency||0)); const seen=new Set();return sorted.filter(x=>{if(seen.has(x.ip))return false;seen.add(x.ip);return true;}).slice(0,count); }
+function scanCount(limit,mode) {return Math.min(LIGHT_SCREEN.maxCandidates,limit*LIGHT_SCREEN[mode].multiplier);}
+function lightValid(r) {return !!r&&!r.error&&r.status===204&&Number.isFinite(r.ms)&&r.ms>0;}
+function pickDownloads(rows,current,limit,rng=Math.random) {
+  const keys=new Set(current.map(e=>e.key)),seen=new Set();
+  const sorted=rows.filter(e=>e.lightSamples&&e.lightSamples.length===2&&e.lightSamples.every(lightValid))
+    .map(e=>({...e,lightLatency:Math.max(...e.lightSamples.map(s=>s.ms))}))
+    .sort((a,b)=>a.lightLatency-b.lightLatency||a.key.localeCompare(b.key));
+  // Deduplicate by IP; keep a passing current endpoint before alternate ports.
+  const priority=sorted.filter(e=>keys.has(e.key));
+  const unique=priority.concat(sorted).filter(e=>{if(seen.has(e.ip))return false;seen.add(e.ip);return true;});
+  const retained=unique.filter(e=>keys.has(e.key)).slice(0,limit);
+  const others=unique.filter(e=>!keys.has(e.key));
+  const available=Math.min(limit-retained.length,others.length),explore=Math.floor(available/5),fast=available-explore;
+  const result=retained.map(e=>({...e,downloadReason:'current'})).concat(others.slice(0,fast).map(e=>({...e,downloadReason:'latency'})));
+  // Shuffle the remaining passing entries to keep some bandwidth exploration.
+  const remaining=others.slice(fast);
+  for(let i=remaining.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[remaining[i],remaining[j]]=[remaining[j],remaining[i]];}
+  return result.concat(remaining.slice(0,explore).map(e=>({...e,downloadReason:'exploration'})));
+}
 async function execute(env,opts,pools,poolInfo=null) {
   const samplingPools=pools,official=poolInfo?poolInfo.official:[];
   pools=pools.concat(official);
@@ -209,16 +235,33 @@ async function execute(env,opts,pools,poolInfo=null) {
   const baseline=await snapshot(true);
   assert(sameEntries(await raw(baseline.cfg),baseline.entries),'实际订阅与后台列表尚未一致，请稍后再试');
   await env.backup({host:opts.host,list:baseline.list,entries:baseline.entries,createdAt:start});
-  const entries=candidates(baseline.entries,samplingPools,Math.max(opts.limit,baseline.entries.length),env.random,official);
-  await update('连通性初筛',0,entries.length);
+  const entries=candidates(baseline.entries,samplingPools,Math.max(scanCount(opts.limit,opts.mode),baseline.entries.length),env.random,official);
+  await update('低流量连通与延迟初筛',0,entries.length);
   const reachable=[];let done=0;
   async function connect(e,target) {
     await guard();
     const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:target==='gstatic'?'HEAD':'GET',url:target==='gstatic'?'http://www.gstatic.com/generate_204':'https://www.youtube.com/generate_204',timeout:4,headers:{'Cache-Control':'no-cache','Connection':'close'}});
     return {valid:!r.error&&r.status===204,ms:r.ms,status:r.status||0};
   }
-  await pool(entries,4,async e=>{const r=await connect(e,'gstatic');if(r.valid)reachable.push(e);await update('连通性初筛',++done,entries.length);});
+  progress.lightRequests=0;
+  await pool(entries,LIGHT_SCREEN[opts.mode].concurrency,async e=>{
+    const lightSamples=[];
+    for(let attempt=0;attempt<2;attempt++) {
+      await guard();progress.lightRequests++;
+      const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'HEAD',
+        url:'http://www.gstatic.com/generate_204?cf_rank_light='+runId+'-'+env.id(),timeout:LIGHT_SCREEN[opts.mode].timeout,
+        headers:{'Cache-Control':'no-cache','Connection':'close'}});
+      await guard();
+      const sample={error:r.error||null,status:r.status||0,ms:r.ms};lightSamples.push(sample);
+      if(!lightValid(sample))break;
+    }
+    if(lightSamples.length===2&&lightSamples.every(lightValid))reachable.push({...e,lightSamples});
+    await update('低流量连通与延迟初筛',++done,entries.length);
+  });
   assert(reachable.length>=10,'可连接候选不足 10 个，保留原订阅');
+  const downloadEntries=pickDownloads(reachable,baseline.entries,opts.limit,env.random);
+  assert(downloadEntries.length>=10,'有效下载候选不足 10 个，保留原订阅');
+  progress.downloadCandidateCount=downloadEntries.length;
   async function download(e,size,seconds) {
     await guard(); const offset=Math.floor(env.random()*150000000);
     const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout:seconds,binary:true,
@@ -227,8 +270,8 @@ async function execute(env,opts,pools,poolInfo=null) {
     assert(r.status!==200,'下载源未遵守 Range，已停止，保留原订阅');
     return downloadValid(r,offset,size);
   }
-  done=0;const screened=[];await update('下载初筛',0,reachable.length);
-  await pool(reachable,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,reachable.length);});
+  done=0;const screened=[];await update('下载初筛',0,downloadEntries.length);
+  await pool(downloadEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,downloadEntries.length);});
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const ranking=[];done=0;
@@ -255,6 +298,10 @@ async function execute(env,opts,pools,poolInfo=null) {
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,selected:expectedNames.map(({ip,port,key,name,egress,score,latency,samples})=>({ip,port,key,name,egress,score,latency,samples})),changed:false,verified:false};
   outcome.poolInfo=poolInfo;
   outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
+  outcome.lightRequests=progress.lightRequests;
+  outcome.downloadCandidateCount=downloadEntries.length;
+  outcome.downloadReasons=downloadEntries.reduce((counts,e)=>{counts[e.downloadReason]=(counts[e.downloadReason]||0)+1;return counts;},{});
+  outcome.downloadCandidates=downloadEntries.map(({ip,port,key,lightLatency,downloadReason})=>({ip,port,key,lightLatency,downloadReason}));
   async function verify(cfg,expected) {
     const a=await raw(cfg);
     const b=parseSurge(await req('GET','/sub?token='+cfg.token+'&surge'),cfg,pools);
@@ -340,6 +387,6 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,execute,renameOnly};
+const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,scanCount,lightValid,pickDownloads,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);

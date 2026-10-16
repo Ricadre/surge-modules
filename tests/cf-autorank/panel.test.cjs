@@ -20,7 +20,7 @@ test('network metadata distinguishes cellular and unavailable Wi-Fi names',()=>{
 test('progress percentage is per stage and shows elapsed data and activity age',()=>{
   const s={running:true,stage:'下载初筛',done:80,total:320,bytes:16000000,startedAt:now-92000,updatedAt:now-2000};
   const v=U.view('status',s,now,'lite');
-  assert.equal(v.content,'下载初筛 80/320 · 25%\n1分32秒 · 16 MB · 2秒前进展');
+  assert.equal(v.content,'下载初筛 80/320 · 25%\n1分32秒 · 下载 16 MB · 2秒前进展');
 });
 test('stale state is uncertain rather than falsely running or complete',()=>{
   const s={running:true,stage:'双次复测',done:7,total:24,updatedAt:now-95000};
