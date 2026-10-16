@@ -76,7 +76,7 @@ function reserveFixture(options={}) {
    if(!seen.includes(d))seen.push(d);
    const i=seen.indexOf(d);events.push({kind:'premium',descriptor:d,stage});
    if(i===24&&options.delayed)elapsed=11*60*1000;
-   if((i>=7&&i<24)||i===24&&options.rejectFirstReserve||stage==='更新 Premium 检测记录'&&options.refreshFailure)
+   if((i>=7&&i<24)||i===24&&options.rejectFirstReserve||stage==='出口与 Premium 最终复核'&&i<7&&options.refreshFailure)
     return {...response,data:premiumPage({unavailable:true})};
   }
   if(spec.headers.Range) {
@@ -121,17 +121,18 @@ test('reserve Premium failures cost no full downloads and failed full retests ca
 test('reserve retesting stops at 24 extra candidates instead of consuming unbounded downloads',async()=>{
  const f=reserveFixture({limit:160,rejectReserveDownloads:true});
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 7\/10，补选复测达到上限/);
- assert.equal(f.seen.length,48);assert.equal(f.downloads.length,62);
+ assert.equal(f.seen.length,48);assert.equal(f.downloads.length,38);
  const s=f.progress.at(-1).supplement;assert.equal(s.refined,24);assert.equal(s.added,0);assert(s.limited);
+ assert.equal(f.progress.at(-1).refinement.reserveSkippedInvalidFirst,24);
  assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
 });
 test('a long reserve pass refreshes old Premium pairs without weakening the final age rule',async()=>{
  const f=reserveFixture({delayed:true}),r=await C.execute(f.env,f.opts,pools);
- assert(r.verified);assert.equal(r.premium.refreshed,10);assert.equal(r.premium.verified,10);
+ assert(r.verified);assert.equal(r.premium.refreshed,7);assert.equal(r.premium.verified,10);
  const P=require('../../src/cf-autorank/youtube-premium.js');
  assert(r.selected.every(e=>P.qualified(e.premium,f.env.now())));
- assert.equal(f.events.filter(e=>e.stage==='更新 Premium 检测记录').length,20);
- assert(f.progress.some(p=>p.stage==='更新 Premium 检测记录'&&p.done===10));
+ assert.equal(f.events.filter(e=>e.stage==='出口与 Premium 最终复核').length,24);
+ assert(f.progress.some(p=>p.stage==='出口与 Premium 最终复核'&&p.done===10));
 });
 test('a lost Premium qualification during evidence refresh keeps the original subscription',async()=>{
  const f=reserveFixture({delayed:true,refreshFailure:true});
@@ -204,8 +205,10 @@ test('default lite screens 1280 with small HEAD requests then limits bandwidth d
  assert.equal(light.length,2560);assert.equal(new Set(light.map(x=>x.url)).size,2560);assert.equal(maxActive,16);
  assert.equal(r.downloadCandidateCount,160);assert.deepEqual(r.downloadReasons,{current:10,latency:120,exploration:30});
  const sizes=downloads.map(s=>{const m=/bytes=(\d+)-(\d+)/.exec(s.headers.Range);return Number(m[2])-Number(m[1])+1;});
- assert.equal(sizes.filter(n=>n===131072).length,160);assert.equal(sizes.filter(n=>n===2000000).length,48);
- assert.equal(r.bytes,160*131072+48*2000000);
+ assert.equal(sizes.filter(n=>n===131072).length,160);
+ assert.equal(r.refinement.firstSamples,24);assert(r.refinement.secondSamples>=10&&r.refinement.secondSamples<=24);
+ assert.equal(sizes.filter(n=>n===2000000).length,48-r.refinement.savedSecondSamples);
+ assert.equal(r.bytes,160*131072+(48-r.refinement.savedSecondSamples)*2000000);
  assert.equal(new Set(r.downloadCandidates.map(e=>e.ip)).size,160);
  assert(f.progress.some(p=>p.stage==='低流量连通与延迟初筛'&&p.total===1280&&p.done===1280));
  assert(f.progress.some(p=>p.stage==='下载初筛'&&p.total===160));
@@ -226,7 +229,7 @@ test('full mode keeps 2560 light candidates while default downloads fall to 160'
  assert(r.verified);assert.equal(r.candidateCount,2560);assert.equal(r.lightRequests,5120);
  assert.equal(r.downloadCandidateCount,160);assert.equal(r.selected.length,10);
  assert.deepEqual(r.downloadReasons,{current:10,latency:120,exploration:30});
- assert.equal(r.bytes,160*524288+24*2*8000000);
+ assert.equal(r.bytes,160*524288+(48-r.refinement.savedSecondSamples)*8000000);
 });
 test('flaky second light responses cannot enter the download shortlist',async()=>{
  const f=fixture(),probe=f.env.probe,attempts=new Map(),failed=new Set(),downloaded=new Set();

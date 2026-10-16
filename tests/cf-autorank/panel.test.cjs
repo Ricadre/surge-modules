@@ -61,3 +61,18 @@ test('optimized stages show concurrency or preflight counts without adding a pan
  assert.match(U.view('status',{...s,stage:'低流量连通与延迟初筛',done:128,total:1280,lightConcurrency:16},now).content,/并发 16/);
  assert.match(U.view('status',{...s,stage:'轻量初筛降载复核',done:12,total:64,lightConcurrency:8},now).content,/降载复核 12\/64\n并发 8/);
 });
+test('two-pass and pipelined stages retain compact progress without counting incomplete nodes as selected',()=>{
+ const s={running:true,updatedAt:now,startedAt:now-30000,bytes:21000000,done:12,total:24,
+  premium:{eligible:15,passed:0,verified:0,bytes:5000000},refinement:{savedSecondSamples:4}};
+ const pre=U.view('status',{...s,stage:'Premium 与稳定性检查'},now).content;
+ assert.equal(pre,'预检与稳定性 12/24\nPremium 通过 15 个 · 正文 26 MB');
+ const first=U.view('status',{...s,stage:'下载复测首轮'},now).content;
+ assert.match(first,/首轮复测 12\/24/);assert(!first.includes('已选'));
+ const final=U.view('status',{...s,stage:'下载复测决选',premium:{...s.premium,passed:10}},now).content;
+ assert.equal(final,'决选复测 12/24\n已选 10/10 · 省复测 4 次 · 26 MB');
+ const reserve=U.view('status',{...s,stage:'后备 Premium 与稳定性检查',premium:{...s.premium,passed:7}},now).content;
+ assert.match(reserve,/已选 7\/10/);
+ const verify=U.view('status',{...s,stage:'出口与 Premium 最终复核',done:3,total:10,premium:{...s.premium,verified:3}},now).content;
+ assert.equal(verify,'出口与 Premium 复核 3/10\nPremium 复核 3/10 · 正文 26 MB');
+ for(const text of [pre,first,final,reserve,verify])assert.equal(text.split('\n').length,2);
+});

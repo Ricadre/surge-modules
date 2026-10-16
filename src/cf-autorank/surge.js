@@ -5,18 +5,38 @@ const ui = CFPanelUI;
 const poolSource=CFPoolSource;
 let poolInfo=null,backendRoute='direct';
 let opts, stateKey, finished=false, ownsRun=false, ownerId;
+let latestProgress=null,lastStateWriteAt=0;
+const preludeTimings={};
+const storageDiagnostics={reads:0,writes:0,readMs:0,writeMs:0,progressUpdates:0,coalescedProgress:0};
+const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.16';
+const UA='CF-Edge-AutoRank/0.1.17';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
-function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
-function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
-function isOwner(){const s=read();return ownsRun&&s.ownerId===ownerId&&s.running===true;}
-function requireOwner(){if(ownsRun&&!isOwner())throw new Error('本轮已停止或被新任务替代');}
-function touch(){
-  if(!isOwner())return;
-  const s=read();if(Date.now()-(s.updatedAt||0)>=1000)write({...s,updatedAt:Date.now()});
+function read(key=stateKey){
+  const begin=Date.now();storageDiagnostics.reads++;
+  try{return JSON.parse($persistentStore.read(key)||'{}');}catch(_){return {};}
+  finally{storageDiagnostics.readMs+=Math.max(0,Date.now()-begin);}
+}
+function write(value,key=stateKey){
+  const begin=Date.now();storageDiagnostics.writes++;
+  // The saved timing excludes this write itself, avoiding another diagnostic write.
+  const record=key===stateKey&&ownsRun&&value.ownerId===ownerId?{...value,storageDiagnostics:{...storageDiagnostics}}:value;
+  try{if(!$persistentStore.write(JSON.stringify(record),key))throw new Error('本机状态存储失败，已停止');}
+  finally{storageDiagnostics.writeMs+=Math.max(0,Date.now()-begin);}
+  if(key===stateKey)lastStateWriteAt=Date.now();
+}
+function isOwner(s){return ownsRun&&s&&s.ownerId===ownerId&&s.running===true;}
+// A supplied state is used only within the same synchronous call; never across await.
+function requireOwner(s=ownsRun?read():null){if(ownsRun&&!isOwner(s))throw new Error('本轮已停止或被新任务替代');return s;}
+function ownedWrite(patch={},s=requireOwner()){
+  requireOwner(s);
+  if(!ownsRun)return;
+  write({...s,...latestProgress,backendRoute,...patch,cancelRequested:!!s.cancelRequested});
+}
+function touch(s){
+  if(ownsRun&&Date.now()-(s.updatedAt||0)>=1000)ownedWrite({updatedAt:Date.now()},s);
 }
 function done(title,content,error,notify) {
   if(finished)return;finished=true;
@@ -30,6 +50,7 @@ function done(title,content,error,notify) {
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  if(s.startedAt)lines.push('本轮总耗时：'+ui.duration(Math.max(0,(s.running?Date.now():s.updatedAt||Date.now())-s.startedAt)));
   const premium=s.premium||s.result&&s.result.premium;
   if(premium&&premium.eligible!==undefined)lines.push('Premium 预检：'+premium.eligible+'/'+premium.tested+' 个通过');
   if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
@@ -41,6 +62,10 @@ function statusText(s){
   if(timings)lines.push('各阶段耗时：'+Object.entries(timings).filter(([,ms])=>ms>=1000).map(([stage,ms])=>stage+' '+Math.round(ms/1000)+'秒').join(' · '));
   const light=s.result&&s.result.lightScreen||s.lightScreen;
   if(light)lines.push('轻量检测：最高并发 '+light.maxConcurrency+' · 降载 '+light.backoffs+' 次 · 复核 '+light.rechecked+' 个');
+  const refinement=s.result&&s.result.refinement||s.refinement;
+  if(refinement)lines.push('下载复测：省去第二遍 '+refinement.savedSecondSamples+' 次（首遍无效 '+(refinement.skippedInvalidFirst+refinement.reserveSkippedInvalidFirst)+' · 已无法入选 '+refinement.skippedByBound+'）');
+  const storage=s.storageDiagnostics;
+  if(storage)lines.push('本机状态：读取 '+storage.reads+' 次 · 写入 '+storage.writes+' 次 · 合并进度 '+storage.coalescedProgress+' 次 · 累计约 '+(storage.readMs+storage.writeMs)+' 毫秒');
   if(s.backendRoute)lines.push('后台请求路径：'+(s.backendRoute==='rules'?'按现有 Surge 规则':'DIRECT'));
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
@@ -52,10 +77,10 @@ function statusText(s){
 }
 function request(options,method) {
   return new Promise((resolve,reject)=>{
-    requireOwner();touch();
+    touch(requireOwner());
     const begin=Date.now();
     $httpClient[method.toLowerCase()](options,(error,response,data)=>{
-      try { requireOwner();touch(); } catch (e) {reject(e);return;}
+      try { touch(requireOwner()); } catch (e) {reject(e);return;}
       const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':'request failed'):null;
       const bytes=data&&typeof data.byteLength==='number'?data.byteLength:data&&Array.isArray(data)?data.length:0;
       resolve({error:safeError,status:response?Number(response.status):0,headers:response&&response.headers||{},data,bytes,ms:Math.max(1,Date.now()-begin)});
@@ -96,28 +121,29 @@ try {
     if(backendRoute!=='direct'||(!r.error&&r.status))return;
     controlGuard();backendRoute='rules';
     console.log('后台直连连接失败，后续管理请求按现有 Surge 规则；测速路径不变');
-    if(isOwner())write({...read(),backendRoute,updatedAt:Date.now()});
+    if(ownsRun)ownedWrite({backendRoute,updatedAt:Date.now()});
   }
   async function retryWait(label,nextAttempt){
     controlGuard();
     const note=label+' · 重试 '+nextAttempt+'/3'+(backendRoute==='rules'?' · 按现有规则':'');
     console.log(note);
-    if(isOwner())write({...read(),backendRetry:note,updatedAt:Date.now()});
+    if(ownsRun)ownedWrite({backendRetry:note,updatedAt:Date.now()});
     await new Promise(resolve=>setTimeout(resolve,nextAttempt===2?1000:3000));
     controlGuard();
   }
-  function clearRetry(){if(isOwner()&&read().backendRetry)write({...read(),backendRetry:null,updatedAt:Date.now()});}
+  function clearRetry(){const s=requireOwner();if(ownsRun&&s.backendRetry)ownedWrite({backendRetry:null,updatedAt:Date.now()},s);}
   if(opts.action==='start') {
     const initialNetwork=networkKey();
-    const guard=()=>{requireOwner();if(read().cancelRequested)throw new Error('已取消，未发布结果');if(networkKey()!==initialNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');};
-    let cached;try{cached=JSON.parse($persistentStore.read(stateKey+'_poolcache')||'null');}catch(_){}
-    write({...read(),stage:'更新候选池',updatedAt:Date.now()});
-    poolInfo=await poolSource.refresh({now:()=>Date.now(),guard,cached,
+    const guard=()=>{const s=requireOwner();if(s.cancelRequested)throw new Error('已取消，未发布结果');if(networkKey()!==initialNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');};
+    const cached=read(stateKey+'_poolcache');
+    ownedWrite({stage:'更新候选池',updatedAt:Date.now()});
+    const poolStarted=Date.now();
+    try {poolInfo=await poolSource.refresh({now:()=>Date.now(),guard,cached,
       fetch:url=>request({url,policy:'DIRECT',timeout:8,'auto-cookie':false,'auto-redirect':false,
         headers:{'User-Agent':UA,'Cache-Control':'no-cache',Accept:'text/plain, application/json'}},'GET'),
-      save:cache=>{guard();return $persistentStore.write(JSON.stringify(cache),stateKey+'_poolcache');}
-    },CF_RANK_OFFICIAL);
-    guard();write({...read(),poolInfo,stage:'正在登录后台',updatedAt:Date.now()});
+      save:cache=>{guard();try{write(cache,stateKey+'_poolcache');return true;}catch(_){return false;}}
+    },CF_RANK_OFFICIAL);}finally{preludeTimings['更新候选池']=Math.max(0,Date.now()-poolStarted);}
+    guard();ownedWrite({poolInfo,stage:'正在登录后台',stageTimings:{...preludeTimings},updatedAt:Date.now()});
     console.log('候选池：'+poolSource.label(poolInfo)+' · '+poolInfo.addressCount+' 个 IPv4 地址');
     if(!poolInfo.source.startsWith('live-'))console.log('官方在线更新未成功，本轮使用'+poolSource.label(poolInfo));
     if(poolInfo.cacheSaved===false)console.log('本轮在线池已取得，但本机缓存保存失败');
@@ -188,30 +214,36 @@ try {
     geoip:ip=>typeof $utils!=='undefined'&&typeof $utils.geoip==='function'?$utils.geoip(ip):'',
     probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
       'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
-    cancelled:async()=>!isOwner()||!!read().cancelRequested,
-    progress:async p=>{requireOwner();const old=read();write({...p,ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true,cancelRequested:!!old.cancelRequested});
+    cancelled:async()=>{const s=read();if(!isOwner(s))return true;if(s.cancelRequested)ownedWrite({updatedAt:Date.now()},s);return !!s.cancelRequested;},
+    progress:async p=>{const old=requireOwner();storageDiagnostics.progressUpdates++;
+      latestProgress={...p,startedAt:started,stageTimings:{...preludeTimings,...p.stageTimings},ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true};
+      const checkpoint=p.stage!==old.stage||p.done===p.total||/发布前|保存|完成/.test(p.stage)||old.cancelRequested;
+      if(checkpoint||Date.now()-lastStateWriteAt>=PROGRESS_WRITE_MS)ownedWrite({},old);else storageDiagnostics.coalescedProgress++;
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
-    backup:async value=>{requireOwner();if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
+    backup:async value=>{requireOwner();try{write(value,stateKey+'_backup');}catch(_){throw new Error('无法备份原列表，停止发布');}}
   };
   if(opts.action==='rename') {
     const renamed=await core.renameOnly(env,opts,CF_RANK_POOLS);requireOwner();
     const known=renamed.selected.filter(e=>e.egress&&e.egress.country).length;
     const message='10 个名称已核对，'+known+' 个出口国家已识别，'+(10-known)+' 个未知以 🌐 标记。IP、端口和顺序未变。请刷新原订阅。';
-    write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,backendRoute,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
+    ownedWrite({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,backendRoute,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
     done('Cloudflare 节点名称已核对',message,false,true);return;
   }
+  preludeTimings['启动准备']=Math.max(0,Date.now()-started-(preludeTimings['更新候选池']||0));
   const result=await core.execute(env,opts,CF_RANK_POOLS,poolInfo);
+  result.stageTimings={...preludeTimings,...result.stageTimings};
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
-  write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
+  ownedWrite({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
   done('Cloudflare 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true);
 } catch(error) {
   const message=String(error.message||'未知错误');
-  if(stateKey&&ownsRun&&!isOwner()){done('Cloudflare 旧任务已结束',statusText(read()),false,false);return;}
-  if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',failureStage:old.stage,backendRetry:null,updatedAt:Date.now(),message});}catch(_){}}
+  const old=stateKey&&ownsRun?read():null;
+  if(old&&!isOwner(old)){done('Cloudflare 旧任务已结束',statusText(old),false,false);return;}
+  if(old){try{ownedWrite({running:false,stage:'未完成',failureStage:latestProgress&&latestProgress.stage||old.stage,stageTimings:{...preludeTimings,...old.stageTimings,...latestProgress&&latestProgress.stageTimings},backendRetry:null,updatedAt:Date.now(),message},old);}catch(_){}}
   done('Cloudflare 优选未完成',message,true,true);
 }
 })();

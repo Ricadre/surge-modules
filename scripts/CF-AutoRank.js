@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.16. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.17. Credentials are entered by the user; never bundle secrets.
 (function(root) {
 'use strict';
 const MAX_HTML=2500000;
@@ -400,25 +400,23 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const selected=[];
   progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,bytes:0};
-  async function stableBatch(rows,stage) {
-    const checked=new Array(rows.length);let done=0;
-    await update(stage,0,rows.length);
-    await pool(rows,4,async(e,i)=>{
-      const checks=[];
-      for(let n=0;n<3;n++) {
-        checks.push(await connect(e,'gstatic'));if(!checks[checks.length-1].valid)break;
-        checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
-      }
-      await guard();
-      checked[i]={...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
-      await update(stage,++done,rows.length);
-    });
-    return checked;
-  }
-  async function refine(e) {
-    const samples=[await download(e,mode.sampleBytes,8),await download(e,mode.sampleBytes,8)];
+  progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
+    reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
+  async function stableOne(e) {
+    const checks=[];
+    for(let n=0;n<3;n++) {
+      checks.push(await connect(e,'gstatic'));if(!checks[checks.length-1].valid)break;
+      checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
+    }
     await guard();
-    return {...e,valid:samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),samples};
+    return {...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
+  }
+  async function refineReserve(e) {
+    const samples=[await download(e,mode.sampleBytes,8)];progress.refinement.reserveFirstSamples++;
+    if(samples[0].valid){samples.push(await download(e,mode.sampleBytes,8));progress.refinement.reserveSecondSamples++;}
+    else {progress.refinement.reserveSkippedInvalidFirst++;progress.refinement.savedSecondSamples++;}
+    await guard();
+    return {...e,valid:samples.length===2&&samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),samples};
   }
   async function premiumProbe(e) {
     const result=await premium.probe(env,descriptor(e,baseline.cfg),guard);
@@ -438,74 +436,94 @@ async function execute(env,opts,pools,poolInfo=null) {
     if(result.status!=='available')progress.premium[result.status]++;
     return result;
   }
-  async function premiumBatch(rows,stage,offset=0,total=rows.length) {
+  async function qualifyingBatch(rows,stage,offset=0,total=rows.length) {
     const checked=new Array(rows.length);let done=0;
     await update(stage,offset,total);
     await pool(rows,4,async(e,i)=>{
       const result=await checkCandidate(e);
-      if(result.status==='available')progress.premium.eligible++;
-      checked[i]={...e,premium:result};
+      if(result.status==='available') {
+        progress.premium.eligible++;
+        checked[i]=await stableOne({...e,premium:result});
+      }
       await update(stage,offset+(++done),total);
     });
-    return checked.filter(e=>e.premium.status==='available');
+    return checked.filter(Boolean);
   }
-  // Check all first-round finalists before large downloads, retaining their
-  // original order regardless of which parallel response completes first.
-  const eligible=await premiumBatch(finalists,'YouTube Premium 检测');
-  const stable=(await stableBatch(eligible,'稳定性检查')).filter(e=>e.valid);
-  const ranking=[];done=0;await update('双次下载复测',0,stable.length);
-  // No probe pool is running here. Final bandwidth observations remain serial.
-  for(const e of stable) {
-    ranking.push(await refine(e));progress.premium.passed=Math.min(10,ranking.filter(x=>x.valid).length);
-    await update('双次下载复测',++done,stable.length);
+  // Four workers keep each node's Premium and stability requests sequential.
+  // The entire pool drains before any full bandwidth measurement starts.
+  const stable=(await qualifyingBatch(finalists,'Premium 与稳定性检查')).filter(e=>e.valid);
+  progress.refinement.initialCandidates=stable.length;
+  const first=[],ranking=new Array(stable.length);done=0;await update('下载复测首轮',0,stable.length);
+  for(let index=0;index<stable.length;index++) {
+    const e=stable[index],sample=await download(e,mode.sampleBytes,8);await guard();
+    progress.refinement.firstSamples++;
+    if(sample.valid)first.push({e,sample,index});
+    else {progress.refinement.skippedInvalidFirst++;progress.refinement.savedSecondSamples++;}
+    await update('下载复测首轮',++done,stable.length);
   }
-  selected.push(...topDistinct(ranking,10));
+  // min(first, second) cannot exceed first. Measure the most promising bounds
+  // first, retaining equal-score candidates for the original latency tie-break.
+  first.sort((a,b)=>b.sample.mbps-a.sample.mbps||a.index-b.index);
+  done=0;await update('下载复测决选',0,first.length);
+  for(const {e,sample,index} of first) {
+    await guard();
+    const leaders=topDistinct(ranking.filter(Boolean),10);
+    if(leaders.length===10&&sample.mbps<leaders[9].score) {
+      progress.refinement.skippedByBound++;progress.refinement.savedSecondSamples++;
+    } else {
+      const second=await download(e,mode.sampleBytes,8);await guard();progress.refinement.secondSamples++;
+      const samples=[sample,second];
+      // Index storage preserves the original order for exact speed/latency ties.
+      ranking[index]={...e,valid:second.valid,score:Math.min(sample.mbps,second.mbps),samples};
+      progress.premium.passed=Math.min(10,ranking.filter(e=>e&&e.valid).length);
+    }
+    await update('下载复测决选',++done,first.length);
+  }
+  selected.push(...topDistinct(ranking.filter(Boolean),10));
   const finalistIPs=new Set(finalists.map(e=>e.ip));
   const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
   progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
   let nextReserve=0;
   while(selected.length<10&&nextReserve<reserves.length) {
     await guard();
-    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 检测',progress.supplement.examined,reserves.length);break;}
+    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
     const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
     const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
-    const passed=await premiumBatch(batch,'后备 Premium 检测',progress.supplement.examined,reserves.length);
-    progress.supplement.examined+=batch.length;progress.supplement.eligible+=passed.length;
-    const checked=await stableBatch(passed,'后备稳定性检查');
-    progress.supplement.refined+=passed.length;
+    const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+    progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
+    progress.supplement.refined+=checked.length;
     progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
     const ready=checked.filter(e=>e.valid);let done=0;
     await update('后备节点速度复测',0,ready.length);
     for(const e of ready) {
-      const row=await refine(e);
+      const row=await refineReserve(e);
       if(row.valid){selected.push(row);progress.supplement.added++;}
       else progress.supplement.failedRefine++;
       progress.premium.passed=selected.length;
       await update('后备节点速度复测',++done,ready.length);
     }
-    await update('后备 Premium 检测',progress.supplement.examined,reserves.length);
+    await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
   }
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
     'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
   selected.splice(0,selected.length,...topDistinct(selected,10));
-  const expectedNames=await exitNames(env,selected,baseline.cfg,guard,update,4);
-  // A longer reserve pass must not make earlier evidence silently expire.
-  // Replace old pairs with fresh evidence; keep the three-check/10-minute rule.
-  if(expectedNames.some(e=>e.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2))) {
-    await update('更新 Premium 检测记录',0,10);
-    await pool(expectedNames,4,async e=>{
-      const result=await premiumPair(e);
+  const observed=new Array(selected.length),geoCache=new Map();
+  await update('出口与 Premium 最终复核',0,10);
+  await pool(selected,4,async(e,index)=>{
+    const row={...e,egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
+    // Refresh only this node's old pair, checking age when its worker reaches
+    // this step. All nodes still need three fresh, matching Premium responses.
+    if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
+      const result=await premiumPair(row);
       assert(result.status==='available','Premium 更新检测未通过，保留原订阅');
-      e.premium=result;progress.premium.refreshed++;
-      await update('更新 Premium 检测记录',progress.premium.refreshed,10);
-    });
-  }
-  await update('YouTube Premium 发布前复核',0,10);
-  await pool(expectedNames,4,async e=>{
-    e.premium.samples.push(await premiumProbe(e));
-    assert(premium.qualified(e.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
-    progress.premium.verified++;await update('YouTube Premium 发布前复核',progress.premium.verified,10);
+      row.premium=result;progress.premium.refreshed++;
+    }
+    row.premium.samples.push(await premiumProbe(row));
+    assert(premium.qualified(row.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
+    observed[index]=row;
+    progress.premium.verified++;await update('出口与 Premium 最终复核',progress.premium.verified,10);
   });
+  const expectedNames=namedEntries(observed);
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
@@ -515,6 +533,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
+  outcome.refinement={...progress.refinement};
   outcome.lightScreen=light.stats;
   function finishOutcome(){outcome.stageTimings=timingSnapshot();outcome.finishedAt=env.now();return outcome;}
   outcome.poolInfo=poolInfo;
@@ -740,17 +759,22 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.16 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.17 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
     const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','YouTube Premium 检测':'Premium 预检','轻量初筛降载复核':'降载复核','稳定性检查':'稳定性检查','双次下载复测':'双次复测','后备稳定性检查':'补选稳定性','YouTube Premium 发布前复核':'Premium 复核','后备 Premium 检测':'后备 Premium','后备节点速度复测':'补选复测','更新 Premium 检测记录':'更新 Premium','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
+    Object.assign(names,{'Premium 与稳定性检查':'预检与稳定性','后备 Premium 与稳定性检查':'后备预检与稳定性','下载复测首轮':'首轮复测','下载复测决选':'决选复测','出口与 Premium 最终复核':'出口与 Premium 复核'});
     const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
     if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
     if(s.backendRetry)return stage+'\n'+s.backendRetry+' · '+traffic;
+    if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
+    if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
+    if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;
+    if(s.stage==='出口与 Premium 最终复核')return stage+'\nPremium 复核 '+(premium&&premium.verified||0)+'/10 · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'&&premium&&premium.eligible!==undefined)return stage+'\n待复测 '+premium.eligible+' 个 · 正文 '+traffic;
     if(s.stage==='低流量连通与延迟初筛'||s.stage==='轻量初筛降载复核')return stage+'\n并发 '+(s.lightConcurrency||8)+' · '+duration(now-(s.startedAt||now))+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'
@@ -785,18 +809,38 @@ const ui = CFPanelUI;
 const poolSource=CFPoolSource;
 let poolInfo=null,backendRoute='direct';
 let opts, stateKey, finished=false, ownsRun=false, ownerId;
+let latestProgress=null,lastStateWriteAt=0;
+const preludeTimings={};
+const storageDiagnostics={reads:0,writes:0,readMs:0,writeMs:0,progressUpdates:0,coalescedProgress:0};
+const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.16';
+const UA='CF-Edge-AutoRank/0.1.17';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
-function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
-function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
-function isOwner(){const s=read();return ownsRun&&s.ownerId===ownerId&&s.running===true;}
-function requireOwner(){if(ownsRun&&!isOwner())throw new Error('本轮已停止或被新任务替代');}
-function touch(){
-  if(!isOwner())return;
-  const s=read();if(Date.now()-(s.updatedAt||0)>=1000)write({...s,updatedAt:Date.now()});
+function read(key=stateKey){
+  const begin=Date.now();storageDiagnostics.reads++;
+  try{return JSON.parse($persistentStore.read(key)||'{}');}catch(_){return {};}
+  finally{storageDiagnostics.readMs+=Math.max(0,Date.now()-begin);}
+}
+function write(value,key=stateKey){
+  const begin=Date.now();storageDiagnostics.writes++;
+  // The saved timing excludes this write itself, avoiding another diagnostic write.
+  const record=key===stateKey&&ownsRun&&value.ownerId===ownerId?{...value,storageDiagnostics:{...storageDiagnostics}}:value;
+  try{if(!$persistentStore.write(JSON.stringify(record),key))throw new Error('本机状态存储失败，已停止');}
+  finally{storageDiagnostics.writeMs+=Math.max(0,Date.now()-begin);}
+  if(key===stateKey)lastStateWriteAt=Date.now();
+}
+function isOwner(s){return ownsRun&&s&&s.ownerId===ownerId&&s.running===true;}
+// A supplied state is used only within the same synchronous call; never across await.
+function requireOwner(s=ownsRun?read():null){if(ownsRun&&!isOwner(s))throw new Error('本轮已停止或被新任务替代');return s;}
+function ownedWrite(patch={},s=requireOwner()){
+  requireOwner(s);
+  if(!ownsRun)return;
+  write({...s,...latestProgress,backendRoute,...patch,cancelRequested:!!s.cancelRequested});
+}
+function touch(s){
+  if(ownsRun&&Date.now()-(s.updatedAt||0)>=1000)ownedWrite({updatedAt:Date.now()},s);
 }
 function done(title,content,error,notify) {
   if(finished)return;finished=true;
@@ -810,6 +854,7 @@ function done(title,content,error,notify) {
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  if(s.startedAt)lines.push('本轮总耗时：'+ui.duration(Math.max(0,(s.running?Date.now():s.updatedAt||Date.now())-s.startedAt)));
   const premium=s.premium||s.result&&s.result.premium;
   if(premium&&premium.eligible!==undefined)lines.push('Premium 预检：'+premium.eligible+'/'+premium.tested+' 个通过');
   if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
@@ -821,6 +866,10 @@ function statusText(s){
   if(timings)lines.push('各阶段耗时：'+Object.entries(timings).filter(([,ms])=>ms>=1000).map(([stage,ms])=>stage+' '+Math.round(ms/1000)+'秒').join(' · '));
   const light=s.result&&s.result.lightScreen||s.lightScreen;
   if(light)lines.push('轻量检测：最高并发 '+light.maxConcurrency+' · 降载 '+light.backoffs+' 次 · 复核 '+light.rechecked+' 个');
+  const refinement=s.result&&s.result.refinement||s.refinement;
+  if(refinement)lines.push('下载复测：省去第二遍 '+refinement.savedSecondSamples+' 次（首遍无效 '+(refinement.skippedInvalidFirst+refinement.reserveSkippedInvalidFirst)+' · 已无法入选 '+refinement.skippedByBound+'）');
+  const storage=s.storageDiagnostics;
+  if(storage)lines.push('本机状态：读取 '+storage.reads+' 次 · 写入 '+storage.writes+' 次 · 合并进度 '+storage.coalescedProgress+' 次 · 累计约 '+(storage.readMs+storage.writeMs)+' 毫秒');
   if(s.backendRoute)lines.push('后台请求路径：'+(s.backendRoute==='rules'?'按现有 Surge 规则':'DIRECT'));
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
@@ -832,10 +881,10 @@ function statusText(s){
 }
 function request(options,method) {
   return new Promise((resolve,reject)=>{
-    requireOwner();touch();
+    touch(requireOwner());
     const begin=Date.now();
     $httpClient[method.toLowerCase()](options,(error,response,data)=>{
-      try { requireOwner();touch(); } catch (e) {reject(e);return;}
+      try { touch(requireOwner()); } catch (e) {reject(e);return;}
       const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':'request failed'):null;
       const bytes=data&&typeof data.byteLength==='number'?data.byteLength:data&&Array.isArray(data)?data.length:0;
       resolve({error:safeError,status:response?Number(response.status):0,headers:response&&response.headers||{},data,bytes,ms:Math.max(1,Date.now()-begin)});
@@ -876,28 +925,29 @@ try {
     if(backendRoute!=='direct'||(!r.error&&r.status))return;
     controlGuard();backendRoute='rules';
     console.log('后台直连连接失败，后续管理请求按现有 Surge 规则；测速路径不变');
-    if(isOwner())write({...read(),backendRoute,updatedAt:Date.now()});
+    if(ownsRun)ownedWrite({backendRoute,updatedAt:Date.now()});
   }
   async function retryWait(label,nextAttempt){
     controlGuard();
     const note=label+' · 重试 '+nextAttempt+'/3'+(backendRoute==='rules'?' · 按现有规则':'');
     console.log(note);
-    if(isOwner())write({...read(),backendRetry:note,updatedAt:Date.now()});
+    if(ownsRun)ownedWrite({backendRetry:note,updatedAt:Date.now()});
     await new Promise(resolve=>setTimeout(resolve,nextAttempt===2?1000:3000));
     controlGuard();
   }
-  function clearRetry(){if(isOwner()&&read().backendRetry)write({...read(),backendRetry:null,updatedAt:Date.now()});}
+  function clearRetry(){const s=requireOwner();if(ownsRun&&s.backendRetry)ownedWrite({backendRetry:null,updatedAt:Date.now()},s);}
   if(opts.action==='start') {
     const initialNetwork=networkKey();
-    const guard=()=>{requireOwner();if(read().cancelRequested)throw new Error('已取消，未发布结果');if(networkKey()!==initialNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');};
-    let cached;try{cached=JSON.parse($persistentStore.read(stateKey+'_poolcache')||'null');}catch(_){}
-    write({...read(),stage:'更新候选池',updatedAt:Date.now()});
-    poolInfo=await poolSource.refresh({now:()=>Date.now(),guard,cached,
+    const guard=()=>{const s=requireOwner();if(s.cancelRequested)throw new Error('已取消，未发布结果');if(networkKey()!==initialNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');};
+    const cached=read(stateKey+'_poolcache');
+    ownedWrite({stage:'更新候选池',updatedAt:Date.now()});
+    const poolStarted=Date.now();
+    try {poolInfo=await poolSource.refresh({now:()=>Date.now(),guard,cached,
       fetch:url=>request({url,policy:'DIRECT',timeout:8,'auto-cookie':false,'auto-redirect':false,
         headers:{'User-Agent':UA,'Cache-Control':'no-cache',Accept:'text/plain, application/json'}},'GET'),
-      save:cache=>{guard();return $persistentStore.write(JSON.stringify(cache),stateKey+'_poolcache');}
-    },CF_RANK_OFFICIAL);
-    guard();write({...read(),poolInfo,stage:'正在登录后台',updatedAt:Date.now()});
+      save:cache=>{guard();try{write(cache,stateKey+'_poolcache');return true;}catch(_){return false;}}
+    },CF_RANK_OFFICIAL);}finally{preludeTimings['更新候选池']=Math.max(0,Date.now()-poolStarted);}
+    guard();ownedWrite({poolInfo,stage:'正在登录后台',stageTimings:{...preludeTimings},updatedAt:Date.now()});
     console.log('候选池：'+poolSource.label(poolInfo)+' · '+poolInfo.addressCount+' 个 IPv4 地址');
     if(!poolInfo.source.startsWith('live-'))console.log('官方在线更新未成功，本轮使用'+poolSource.label(poolInfo));
     if(poolInfo.cacheSaved===false)console.log('本轮在线池已取得，但本机缓存保存失败');
@@ -968,30 +1018,36 @@ try {
     geoip:ip=>typeof $utils!=='undefined'&&typeof $utils.geoip==='function'?$utils.geoip(ip):'',
     probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
       'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
-    cancelled:async()=>!isOwner()||!!read().cancelRequested,
-    progress:async p=>{requireOwner();const old=read();write({...p,ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true,cancelRequested:!!old.cancelRequested});
+    cancelled:async()=>{const s=read();if(!isOwner(s))return true;if(s.cancelRequested)ownedWrite({updatedAt:Date.now()},s);return !!s.cancelRequested;},
+    progress:async p=>{const old=requireOwner();storageDiagnostics.progressUpdates++;
+      latestProgress={...p,startedAt:started,stageTimings:{...preludeTimings,...p.stageTimings},ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true};
+      const checkpoint=p.stage!==old.stage||p.done===p.total||/发布前|保存|完成/.test(p.stage)||old.cancelRequested;
+      if(checkpoint||Date.now()-lastStateWriteAt>=PROGRESS_WRITE_MS)ownedWrite({},old);else storageDiagnostics.coalescedProgress++;
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
-    backup:async value=>{requireOwner();if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
+    backup:async value=>{requireOwner();try{write(value,stateKey+'_backup');}catch(_){throw new Error('无法备份原列表，停止发布');}}
   };
   if(opts.action==='rename') {
     const renamed=await core.renameOnly(env,opts,CF_RANK_POOLS);requireOwner();
     const known=renamed.selected.filter(e=>e.egress&&e.egress.country).length;
     const message='10 个名称已核对，'+known+' 个出口国家已识别，'+(10-known)+' 个未知以 🌐 标记。IP、端口和顺序未变。请刷新原订阅。';
-    write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,backendRoute,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
+    ownedWrite({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,backendRoute,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
     done('Cloudflare 节点名称已核对',message,false,true);return;
   }
+  preludeTimings['启动准备']=Math.max(0,Date.now()-started-(preludeTimings['更新候选池']||0));
   const result=await core.execute(env,opts,CF_RANK_POOLS,poolInfo);
+  result.stageTimings={...preludeTimings,...result.stageTimings};
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
-  write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
+  ownedWrite({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
   done('Cloudflare 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true);
 } catch(error) {
   const message=String(error.message||'未知错误');
-  if(stateKey&&ownsRun&&!isOwner()){done('Cloudflare 旧任务已结束',statusText(read()),false,false);return;}
-  if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',failureStage:old.stage,backendRetry:null,updatedAt:Date.now(),message});}catch(_){}}
+  const old=stateKey&&ownsRun?read():null;
+  if(old&&!isOwner(old)){done('Cloudflare 旧任务已结束',statusText(old),false,false);return;}
+  if(old){try{ownedWrite({running:false,stage:'未完成',failureStage:latestProgress&&latestProgress.stage||old.stage,stageTimings:{...preludeTimings,...old.stageTimings,...latestProgress&&latestProgress.stageTimings},backendRetry:null,updatedAt:Date.now(),message},old);}catch(_){}}
   done('Cloudflare 优选未完成',message,true,true);
 }
 })();

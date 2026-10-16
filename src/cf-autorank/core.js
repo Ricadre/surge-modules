@@ -321,25 +321,23 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const selected=[];
   progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,bytes:0};
-  async function stableBatch(rows,stage) {
-    const checked=new Array(rows.length);let done=0;
-    await update(stage,0,rows.length);
-    await pool(rows,4,async(e,i)=>{
-      const checks=[];
-      for(let n=0;n<3;n++) {
-        checks.push(await connect(e,'gstatic'));if(!checks[checks.length-1].valid)break;
-        checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
-      }
-      await guard();
-      checked[i]={...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
-      await update(stage,++done,rows.length);
-    });
-    return checked;
-  }
-  async function refine(e) {
-    const samples=[await download(e,mode.sampleBytes,8),await download(e,mode.sampleBytes,8)];
+  progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
+    reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
+  async function stableOne(e) {
+    const checks=[];
+    for(let n=0;n<3;n++) {
+      checks.push(await connect(e,'gstatic'));if(!checks[checks.length-1].valid)break;
+      checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
+    }
     await guard();
-    return {...e,valid:samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),samples};
+    return {...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
+  }
+  async function refineReserve(e) {
+    const samples=[await download(e,mode.sampleBytes,8)];progress.refinement.reserveFirstSamples++;
+    if(samples[0].valid){samples.push(await download(e,mode.sampleBytes,8));progress.refinement.reserveSecondSamples++;}
+    else {progress.refinement.reserveSkippedInvalidFirst++;progress.refinement.savedSecondSamples++;}
+    await guard();
+    return {...e,valid:samples.length===2&&samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),samples};
   }
   async function premiumProbe(e) {
     const result=await premium.probe(env,descriptor(e,baseline.cfg),guard);
@@ -359,74 +357,94 @@ async function execute(env,opts,pools,poolInfo=null) {
     if(result.status!=='available')progress.premium[result.status]++;
     return result;
   }
-  async function premiumBatch(rows,stage,offset=0,total=rows.length) {
+  async function qualifyingBatch(rows,stage,offset=0,total=rows.length) {
     const checked=new Array(rows.length);let done=0;
     await update(stage,offset,total);
     await pool(rows,4,async(e,i)=>{
       const result=await checkCandidate(e);
-      if(result.status==='available')progress.premium.eligible++;
-      checked[i]={...e,premium:result};
+      if(result.status==='available') {
+        progress.premium.eligible++;
+        checked[i]=await stableOne({...e,premium:result});
+      }
       await update(stage,offset+(++done),total);
     });
-    return checked.filter(e=>e.premium.status==='available');
+    return checked.filter(Boolean);
   }
-  // Check all first-round finalists before large downloads, retaining their
-  // original order regardless of which parallel response completes first.
-  const eligible=await premiumBatch(finalists,'YouTube Premium 检测');
-  const stable=(await stableBatch(eligible,'稳定性检查')).filter(e=>e.valid);
-  const ranking=[];done=0;await update('双次下载复测',0,stable.length);
-  // No probe pool is running here. Final bandwidth observations remain serial.
-  for(const e of stable) {
-    ranking.push(await refine(e));progress.premium.passed=Math.min(10,ranking.filter(x=>x.valid).length);
-    await update('双次下载复测',++done,stable.length);
+  // Four workers keep each node's Premium and stability requests sequential.
+  // The entire pool drains before any full bandwidth measurement starts.
+  const stable=(await qualifyingBatch(finalists,'Premium 与稳定性检查')).filter(e=>e.valid);
+  progress.refinement.initialCandidates=stable.length;
+  const first=[],ranking=new Array(stable.length);done=0;await update('下载复测首轮',0,stable.length);
+  for(let index=0;index<stable.length;index++) {
+    const e=stable[index],sample=await download(e,mode.sampleBytes,8);await guard();
+    progress.refinement.firstSamples++;
+    if(sample.valid)first.push({e,sample,index});
+    else {progress.refinement.skippedInvalidFirst++;progress.refinement.savedSecondSamples++;}
+    await update('下载复测首轮',++done,stable.length);
   }
-  selected.push(...topDistinct(ranking,10));
+  // min(first, second) cannot exceed first. Measure the most promising bounds
+  // first, retaining equal-score candidates for the original latency tie-break.
+  first.sort((a,b)=>b.sample.mbps-a.sample.mbps||a.index-b.index);
+  done=0;await update('下载复测决选',0,first.length);
+  for(const {e,sample,index} of first) {
+    await guard();
+    const leaders=topDistinct(ranking.filter(Boolean),10);
+    if(leaders.length===10&&sample.mbps<leaders[9].score) {
+      progress.refinement.skippedByBound++;progress.refinement.savedSecondSamples++;
+    } else {
+      const second=await download(e,mode.sampleBytes,8);await guard();progress.refinement.secondSamples++;
+      const samples=[sample,second];
+      // Index storage preserves the original order for exact speed/latency ties.
+      ranking[index]={...e,valid:second.valid,score:Math.min(sample.mbps,second.mbps),samples};
+      progress.premium.passed=Math.min(10,ranking.filter(e=>e&&e.valid).length);
+    }
+    await update('下载复测决选',++done,first.length);
+  }
+  selected.push(...topDistinct(ranking.filter(Boolean),10));
   const finalistIPs=new Set(finalists.map(e=>e.ip));
   const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
   progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
   let nextReserve=0;
   while(selected.length<10&&nextReserve<reserves.length) {
     await guard();
-    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 检测',progress.supplement.examined,reserves.length);break;}
+    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
     const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
     const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
-    const passed=await premiumBatch(batch,'后备 Premium 检测',progress.supplement.examined,reserves.length);
-    progress.supplement.examined+=batch.length;progress.supplement.eligible+=passed.length;
-    const checked=await stableBatch(passed,'后备稳定性检查');
-    progress.supplement.refined+=passed.length;
+    const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+    progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
+    progress.supplement.refined+=checked.length;
     progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
     const ready=checked.filter(e=>e.valid);let done=0;
     await update('后备节点速度复测',0,ready.length);
     for(const e of ready) {
-      const row=await refine(e);
+      const row=await refineReserve(e);
       if(row.valid){selected.push(row);progress.supplement.added++;}
       else progress.supplement.failedRefine++;
       progress.premium.passed=selected.length;
       await update('后备节点速度复测',++done,ready.length);
     }
-    await update('后备 Premium 检测',progress.supplement.examined,reserves.length);
+    await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
   }
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
     'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
   selected.splice(0,selected.length,...topDistinct(selected,10));
-  const expectedNames=await exitNames(env,selected,baseline.cfg,guard,update,4);
-  // A longer reserve pass must not make earlier evidence silently expire.
-  // Replace old pairs with fresh evidence; keep the three-check/10-minute rule.
-  if(expectedNames.some(e=>e.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2))) {
-    await update('更新 Premium 检测记录',0,10);
-    await pool(expectedNames,4,async e=>{
-      const result=await premiumPair(e);
+  const observed=new Array(selected.length),geoCache=new Map();
+  await update('出口与 Premium 最终复核',0,10);
+  await pool(selected,4,async(e,index)=>{
+    const row={...e,egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
+    // Refresh only this node's old pair, checking age when its worker reaches
+    // this step. All nodes still need three fresh, matching Premium responses.
+    if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
+      const result=await premiumPair(row);
       assert(result.status==='available','Premium 更新检测未通过，保留原订阅');
-      e.premium=result;progress.premium.refreshed++;
-      await update('更新 Premium 检测记录',progress.premium.refreshed,10);
-    });
-  }
-  await update('YouTube Premium 发布前复核',0,10);
-  await pool(expectedNames,4,async e=>{
-    e.premium.samples.push(await premiumProbe(e));
-    assert(premium.qualified(e.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
-    progress.premium.verified++;await update('YouTube Premium 发布前复核',progress.premium.verified,10);
+      row.premium=result;progress.premium.refreshed++;
+    }
+    row.premium.samples.push(await premiumProbe(row));
+    assert(premium.qualified(row.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
+    observed[index]=row;
+    progress.premium.verified++;await update('出口与 Premium 最终复核',progress.premium.verified,10);
   });
+  const expectedNames=namedEntries(observed);
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
@@ -436,6 +454,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
+  outcome.refinement={...progress.refinement};
   outcome.lightScreen=light.stats;
   function finishOutcome(){outcome.stageTimings=timingSnapshot();outcome.finishedAt=env.now();return outcome;}
   outcome.poolInfo=poolInfo;

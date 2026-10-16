@@ -72,11 +72,13 @@ test('Premium rejection prevents all large downloads for that entry',async()=>{
  assert.equal(r.premium.verified,10);assert(r.bytes<117000000);assert.equal(f.metrics().overlaps,0);
 });
 test('failed concurrent final verification drains in-flight probes and never publishes',async()=>{
- const f=simulated(),original=f.env.probe;
+ const f=simulated(),original=f.env.probe,counts=new Map();
  f.env.probe=async spec=>{
   const r=await original(spec);
-  const last=f.progress.at(-1);
-  if(last&&last.stage==='YouTube Premium 发布前复核'&&spec.url.includes('/premium?'))return {...r,data:premiumPage({unavailable:true})};
+  if(spec.url.includes('/premium?')) {
+   const n=(counts.get(spec.descriptor)||0)+1;counts.set(spec.descriptor,n);
+   if(n===3)return {...r,data:premiumPage({unavailable:true})};
+  }
   return r;
  };
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 发布前复核未通过/);

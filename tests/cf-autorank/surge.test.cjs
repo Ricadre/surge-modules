@@ -4,7 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const root=path.join(__dirname,'../../src/cf-autorank');
 const source=fs.readFileSync(path.join(root,'youtube-premium.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'pool-source.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\nconst CF_RANK_OFFICIAL='+fs.readFileSync(path.join(root,'official-pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
 async function run(argument,trigger='button',seedStore={},harness={}) {
- const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[];let output,doneCount=0;
+ const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[],storageOps={reads:0,writes:0};let output,doneCount=0;
  const host='example.net',uuid='11111111-1111-4111-8111-111111111111';
  let list=Array.from({length:10},(_,i)=>`8.35.211.${i+1}:2053#Original-${String(i+1).padStart(2,'0')}`).join('\n');
  const config={HOST:host,HOSTS:[host],UUID:uuid,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};
@@ -43,13 +43,14 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
   callback(null,{status,headers},data);
  }
  let settle;const completion=new Promise(resolve=>{settle=resolve;});
- const ctx={console:{log:s=>logs.push(String(s))},Date,Math,Uint8Array,Promise,setTimeout:harness.fastTimers?(fn)=>setTimeout(fn,0):setTimeout,
+ const HarnessDate=harness.clock?class extends Date{static now(){return harness.clock.now();}}:Date;
+ const ctx={console:{log:s=>logs.push(String(s))},Date:HarnessDate,Math,Uint8Array,Promise,setTimeout:harness.fastTimers?(fn)=>setTimeout(fn,0):setTimeout,
   $utils:{geoip:ip=>{assert.equal(ip,'8.8.4.4');return harness.noGeoIP?null:'US';}},
   $argument:argument,$trigger:trigger,$input:{purpose:'panel'},$network:harness.network||{v4:{primaryInterface:'pdp_ip0',primaryAddress:'192.0.2.10'}},
-  $persistentStore:{read:k=>store[k]||null,write:(v,k)=>{store[k]=v;states.push({key:k,value:JSON.parse(v)});return true;}},
+  $persistentStore:{read:k=>{storageOps.reads++;if(harness.storageCost)harness.clock.advance(harness.storageCost.read);return store[k]||null;},write:(v,k)=>{storageOps.writes++;if(harness.storageCost)harness.clock.advance(harness.storageCost.write);store[k]=v;states.push({key:k,value:JSON.parse(v)});if(harness.onWrite)harness.onWrite({key:k,value:JSON.parse(v),store,states});return true;}},
   $notification:{post:()=>{}},$done:r=>{output=r;doneCount++;settle();},
   $httpClient:{get:(o,c)=>client('GET',o,c),post:(o,c)=>client('POST',o,c),head:(o,c)=>client('HEAD',o,c)}};
- vm.runInNewContext(source,ctx);await completion;return {store,logs,requests,writes,output,doneCount,states};
+ vm.runInNewContext(source,ctx);await completion;return {store,logs,requests,writes,output,doneCount,states,storageOps};
 }
 test('panel status never makes network requests',async()=>{const r=await run('status|example.net|lite|40|');assert.equal(r.requests.length,0);assert.equal(r.doneCount,1);});
 test('missing credentials cannot start measurements or publication',async()=>{const r=await run('start|example.net|lite|40|');assert.equal(r.requests.length,0);assert.match(r.output.content,/密码/);});
@@ -307,7 +308,7 @@ test('adapter persists reserve progress and publishes ten only after on-demand s
  const s=JSON.parse(r.store['CFEdgeRank_example.net']);
  assert.equal(r.writes.length,1);assert(s.result.verified);assert.equal(s.result.supplement.added,3);
  assert.equal(s.result.premium.verified,10);assert.equal(seen.length,27);
- assert(r.states.some(x=>x.value.stage==='后备 Premium 检测'&&x.value.supplement.examined===3));
+ assert(r.states.some(x=>x.value.stage==='后备 Premium 与稳定性检查'&&x.value.supplement.examined===3));
  assert(r.states.some(x=>x.value.stage==='后备节点速度复测'));
  assert(r.logs.some(x=>x.includes('补入 3')));
 });
@@ -370,4 +371,84 @@ test('read-only subscription verification can use fallback without editing local
  }});
  assert.equal(r.requests.filter(x=>x.url.endsWith('/login')).length,2);
  assert(r.logs.some(x=>x.includes('订阅核对通过')));assert.equal(r.writes.length,0);assert.equal(r.states.length,0);
+});
+
+function fixedClock(){let value=1700000000000;return {now:()=>value,advance:ms=>{value+=ms;}};}
+test('adapter coalesces ordinary progress while preserving phase checkpoints and measuring storage work',async t=>{
+ const clock=fixedClock();
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,storageCost:{read:1,write:2}});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']),d=s.storageDiagnostics;
+ assert(s.result.verified);assert.equal(r.writes.length,1);
+ assert(d.coalescedProgress>1200);assert(d.progressUpdates>1280);
+ assert(r.storageOps.reads<r.requests.length*5,'request guards must not repeatedly parse the same synchronous state');
+ assert(r.storageOps.writes<100,'ordinary candidate completion must not persist every progress update');
+ assert.equal(d.writes,r.storageOps.writes);assert(d.reads<=r.storageOps.reads);
+ assert.equal(d.readMs,d.reads);assert.equal(d.writeMs,2*(d.writes-1));
+ assert(r.states.some(x=>x.value.stage==='低流量连通与延迟初筛'&&x.value.done===0));
+ assert(r.states.some(x=>x.value.stage==='低流量连通与延迟初筛'&&x.value.done===1280));
+ assert(r.states.some(x=>x.value.stage==='发布前核对'));
+ assert(r.states.some(x=>x.value.stage==='保存与订阅验证'));
+ assert(r.logs.some(x=>x.includes('本机状态：读取')&&x.includes('合并进度')));
+ assert(r.logs.some(x=>x.includes('下载复测：省去第二遍')));
+ t.diagnostic(JSON.stringify({syntheticRequests:r.requests.length,stateReads:r.storageOps.reads,stateWrites:r.storageOps.writes,coalescedProgress:d.coalescedProgress}));
+});
+test('official candidate refresh duration is included in the persisted completion timings',async()=>{
+ const clock=fixedClock(),initial=clock.now();let liveStartedAt;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,onRequest:({options})=>{
+  if(options.url==='https://www.cloudflare.com/ips-v4')clock.advance(2500);
+ },onWrite:({key,value})=>{
+  if(key==='CFEdgeRank_example.net'&&value.stage==='低流量连通与延迟初筛')liveStartedAt=value.startedAt;
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']);
+ assert(s.result.verified);assert.equal(s.result.stageTimings['更新候选池'],2500);
+ assert.equal(liveStartedAt,initial);assert.equal(s.result.startedAt,initial+2500);
+ assert(s.lastSuccess.elapsedMs>=2500);assert(r.logs.some(x=>x.includes('更新候选池 3秒')));
+ assert(r.logs.some(x=>x.includes('本轮总耗时：2秒')));
+});
+test('heartbeat flush uses the newest coalesced progress instead of writing back an older checkpoint',async()=>{
+ const clock=fixedClock(),initial=clock.now();let light=0;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,onRequest:({options})=>{
+  if(options.url.includes('cf_rank_light=')&&++light===131)clock.advance(1100);
+ }});
+ const first=r.states.find(x=>x.key==='CFEdgeRank_example.net'&&x.value.updatedAt>=initial+1100);
+ assert(first);assert.equal(first.value.stage,'低流量连通与延迟初筛');
+ assert(first.value.done>0&&first.value.done<1280,'heartbeat must retain pending candidate completions');
+ assert(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified);
+});
+test('cancellation during coalesced progress is flushed immediately and never overwritten by heartbeat or failure handling',async()=>{
+ const key='CFEdgeRank_example.net',clock=fixedClock();let light=0,cancelAt=-1;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,onRequest:({options,store})=>{
+  if(options.url.includes('cf_rank_light=')&&++light===131){
+   clock.advance(1100);store[key]=JSON.stringify({...JSON.parse(store[key]),cancelRequested:true});cancelAt=clock.now();
+  }
+ }});
+ const s=JSON.parse(r.store[key]);assert.equal(r.writes.length,0);assert.equal(s.cancelRequested,true);
+ assert.equal(s.failureStage,'低流量连通与延迟初筛');assert(s.done>0);assert.match(s.message,/取消/);
+ const later=r.states.filter(x=>x.key===key&&x.value.updatedAt>=cancelAt);
+ assert(later.length);assert(later.every(x=>x.value.cancelRequested===true));
+});
+test('a network switch during coalesced progress keeps the latest failure context without publishing',async()=>{
+ const clock=fixedClock(),network={wifi:{ssid:'Synthetic first'}};let light=0;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,network,onRequest:({options})=>{
+  if(options.url.includes('cf_rank_light=')&&++light===131)network.wifi.ssid='Synthetic second';
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(r.writes.length,0);assert(s.done>0);
+ assert.equal(s.failureStage,'低流量连通与延迟初筛');assert.match(s.message,/网络变化/);
+});
+test('superseding ownership at the publication checkpoint prevents buffered progress from reviving the old run',async()=>{
+ const key='CFEdgeRank_example.net',clock=fixedClock();
+ const replacement=JSON.stringify({running:true,ownerId:'replacement-owner',updatedAt:clock.now(),stage:'准备'});let replaced=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,onWrite:({key:k,value,store})=>{
+  if(k===key&&value.stage==='发布前核对'&&!replaced){replaced=true;store[key]=replacement;}
+ }});
+ assert(replaced);assert.equal(r.writes.length,0);assert.equal(r.store[key],replacement);
+});
+test('cancel received after saving starts remains recorded while subscription reconciliation completes',async()=>{
+ const key='CFEdgeRank_example.net';let cancelled=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {onRequest:({method,options,store})=>{
+  if(method==='POST'&&options.url.includes('/admin/ADD.txt')){cancelled=true;store[key]=JSON.stringify({...JSON.parse(store[key]),cancelRequested:true});}
+ }});
+ const s=JSON.parse(r.store[key]);assert(cancelled);assert.equal(r.writes.length,1);assert(s.result.verified);
+ assert.equal(s.cancelRequested,true);assert.equal(s.running,false);
+ assert(r.requests.some(x=>x.url.includes('&surge')));
 });
