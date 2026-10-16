@@ -8,7 +8,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.12';
+const UA='CF-Edge-AutoRank/0.1.13';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -36,6 +36,7 @@ function statusText(s){
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.poolInfo)lines.push('候选池：'+poolSource.label(s.poolInfo)+(s.poolInfo.fetchedAt?' · 获取于 '+ui.dateText(s.poolInfo.fetchedAt):''));
+  if(s.failureStage)lines.push('停止阶段：'+s.failureStage);
   if(s.message)lines.push(s.message);
   if(s.result)lines.push(...s.result.selected.map((x,i)=>String(i+1).padStart(2,'0')+' '+x.key+' · '+x.score.toFixed(2)+' Mbps'+(x.premium?' · Premium '+x.premium.region:'')));
   return lines.join('\n');
@@ -69,6 +70,25 @@ try {
   }
   const origin='https://'+opts.host;
   const networkKey=()=>{const n=typeof $network==='object'?$network:localNetwork;return JSON.stringify([n.wifi&&n.wifi.ssid,n.v4&&n.v4.primaryInterface,n.v4&&n.v4.primaryAddress]);};
+  const controlNetwork=networkKey();
+  function controlGuard(){requireOwner();if(networkKey()!==controlNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');}
+  const retryable=r=>!!r.error||r.status===408||r.status===429||r.status>=500&&r.status<=599;
+  function controlError(label,r,attempt,method){
+    const reason=r.error==='timeout'?'请求超时':r.error?'连接失败':r.status?'HTTP '+r.status:'未收到响应';
+    const error=new Error(label+'失败（'+reason+'，已尝试 '+attempt+' 次）');
+    // Store only allowlisted labels and codes, never the URL, body or raw error.
+    error.controlFailure={label,status:r.status||0,reason,attempt,uncertain:method==='POST'&&retryable(r)};
+    return error;
+  }
+  async function retryWait(label,nextAttempt){
+    controlGuard();
+    const note=label+' · 重试 '+nextAttempt+'/3';
+    console.log(note);
+    if(isOwner())write({...read(),backendRetry:note,updatedAt:Date.now()});
+    await new Promise(resolve=>setTimeout(resolve,nextAttempt===2?1000:3000));
+    controlGuard();
+  }
+  function clearRetry(){if(isOwner()&&read().backendRetry)write({...read(),backendRetry:null,updatedAt:Date.now()});}
   if(opts.action==='start') {
     const initialNetwork=networkKey();
     const guard=()=>{requireOwner();if(read().cancelRequested)throw new Error('已取消，未发布结果');if(networkKey()!==initialNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');};
@@ -87,19 +107,44 @@ try {
   async function control(method,path,body){
     if(!(/^\/admin\/(config\.json|ADD\.txt)$/.test(path)||/^\/sub\?token=[a-fA-F0-9]{32}&(b64|surge)$/.test(path)))throw new Error('拒绝未授权的后台路径');
     if(method==='POST'&&path!=='/admin/ADD.txt')throw new Error('本工具只允许保存自定义节点列表');
-    const url=origin+path+(path.includes('?')?'&':'?')+'cf_rank_read='+Date.now();
-    const r=await request({url,body,policy:'DIRECT',timeout:35,'auto-cookie':true,'auto-redirect':false,
-      headers:{'User-Agent':UA,'Cache-Control':'no-cache','Content-Type':'text/plain;charset=utf-8'}},method);
-    if(r.error||r.status!==200)throw new Error(r.status===302?'后台登录已失效，请重新运行':'后台请求失败，请检查网络；未输出凭据');
-    if(path==='/admin/config.json'||method==='POST')return decodeJSON(r.data,'后台');
-    if(typeof r.data!=='string')throw new Error('后台返回的数据格式不正确');
-    return r.data;
+    const label=method==='POST'?'保存节点':path==='/admin/config.json'?'读取后台配置':path==='/admin/ADD.txt'?'读取节点列表':path.endsWith('&b64')?'读取原始订阅':'读取 Surge 订阅';
+    const attempts=method==='GET'?3:1;let reauthenticated=false;
+    for(let attempt=1;attempt<=attempts;attempt++){
+      controlGuard();
+      const url=origin+path+(path.includes('?')?'&':'?')+'cf_rank_read='+Date.now()+'-'+attempt;
+      const r=await request({url,body,policy:'DIRECT',timeout:35,'auto-cookie':true,'auto-redirect':false,
+        headers:{'User-Agent':UA,'Cache-Control':'no-cache','Content-Type':'text/plain;charset=utf-8'}},method);
+      controlGuard();
+      if(!r.error&&r.status===200){
+        clearRetry();
+        if(path==='/admin/config.json'||method==='POST'){
+          try{return decodeJSON(r.data,label);}
+          catch(error){if(method==='POST')error.controlFailure={label,uncertain:true};throw error;}
+        }
+        if(typeof r.data!=='string')throw new Error(label+'返回的数据格式不正确');
+        return r.data;
+      }
+      if(method==='GET'&&path.startsWith('/admin/')&&[302,401].includes(r.status)&&!r.error&&!reauthenticated&&attempt<attempts){
+        reauthenticated=true;console.log(label+' · 重新登录一次');
+        await login(opts.host,opts.password);continue;
+      }
+      if(attempt<attempts&&retryable(r)){await retryWait(label,attempt+1);continue;}
+      throw controlError(label,r,attempt,method);
+    }
   }
   async function login(host,password){
-    const r=await request({url:origin+'/login',body:'password='+encodeURIComponent(password),policy:'DIRECT',timeout:20,
-      'auto-cookie':true,'auto-redirect':false,headers:{'User-Agent':UA,'Content-Type':'application/x-www-form-urlencoded'}},'POST');
-    if(r.error||![200,302].includes(r.status))throw new Error('后台无法连接或登录失败');
-    if(r.status===200){let data;try{data=JSON.parse(r.data);}catch(_){throw new Error('后台密码未被接受，请在模块参数检查');}if(!data.success)throw new Error('后台登录未成功');}
+    for(let attempt=1;attempt<=3;attempt++){
+      controlGuard();
+      const r=await request({url:origin+'/login',body:'password='+encodeURIComponent(password),policy:'DIRECT',timeout:20,
+        'auto-cookie':true,'auto-redirect':false,headers:{'User-Agent':UA,'Content-Type':'application/x-www-form-urlencoded'}},'POST');
+      controlGuard();
+      if(!r.error&&[200,302].includes(r.status)){
+        if(r.status===200){let data;try{data=JSON.parse(r.data);}catch(_){throw new Error('后台密码未被接受，请在模块参数检查');}if(!data.success)throw new Error('后台登录未成功');}
+        clearRetry();return;
+      }
+      if(attempt<3&&retryable(r)){await retryWait('登录后台',attempt+1);continue;}
+      throw controlError('登录后台',r,attempt,'GET');
+    }
   }
   if(opts.action==='verify') {
     await login(opts.host,opts.password);
@@ -143,7 +188,7 @@ try {
 } catch(error) {
   const message=String(error.message||'未知错误');
   if(stateKey&&ownsRun&&!isOwner()){done('Cloudflare 旧任务已结束',statusText(read()),false,false);return;}
-  if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',updatedAt:Date.now(),message});}catch(_){}}
+  if(stateKey&&ownsRun){const old=read();try{write({...old,running:false,stage:'未完成',failureStage:old.stage,backendRetry:null,updatedAt:Date.now(),message});}catch(_){}}
   done('Cloudflare 优选未完成',message,true,true);
 }
 })();

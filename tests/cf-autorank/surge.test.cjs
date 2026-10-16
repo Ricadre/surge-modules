@@ -10,6 +10,8 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
  const config={HOST:host,HOSTS:[host],UUID:uuid,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};
  function client(method,options,callback){
   requests.push({method,url:options.url,policy:options.policy,descriptor:!!options['policy-descriptor']});
+  const fault=harness.respond&&harness.respond({method,options,store,requests,writes});
+  if(fault){callback(fault.error||null,{status:fault.status||0,headers:fault.headers||{}},fault.data||'');return;}
   let data='',status=200,headers={};
   if(options.url.startsWith('https://example.net/')){
    assert.equal(options.policy,'DIRECT');assert.equal(options['auto-redirect'],false);assert.equal(options['auto-cookie'],true);
@@ -36,10 +38,12 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
    else status=204;
   }
   if(harness.onRequest)harness.onRequest({method,options,store,requests});
+  const lost=harness.afterResponse&&harness.afterResponse({method,options,store,requests,writes});
+  if(lost){callback(lost.error||null,{status:lost.status||0,headers:lost.headers||{}},lost.data||'');return;}
   callback(null,{status,headers},data);
  }
  let settle;const completion=new Promise(resolve=>{settle=resolve;});
- const ctx={console:{log:s=>logs.push(String(s))},Date,Math,Uint8Array,Promise,setTimeout,
+ const ctx={console:{log:s=>logs.push(String(s))},Date,Math,Uint8Array,Promise,setTimeout:harness.fastTimers?(fn)=>setTimeout(fn,0):setTimeout,
   $utils:{geoip:ip=>{assert.equal(ip,'8.8.4.4');return harness.noGeoIP?null:'US';}},
   $argument:argument,$trigger:trigger,$input:{purpose:'panel'},$network:harness.network||{v4:{primaryInterface:'pdp_ip0',primaryAddress:'192.0.2.10'}},
   $persistentStore:{read:k=>store[k]||null,write:(v,k)=>{store[k]=v;states.push({key:k,value:JSON.parse(v)});return true;}},
@@ -192,4 +196,99 @@ test('published module has static fallback panels and resolves every action to i
  for(const line of panelLines){assert.match(line,/title=".+",content=".+",style=info/);assert(scripts.has(/script-name=([^,]+)/.exec(line)[1]));}
  for(const line of scriptLines)assert(line.includes('/scripts/CF-AutoRank-'+version+'.js,'));
  assert.equal(fs.readFileSync(path.join(base,'scripts/CF-AutoRank-'+version+'.js'),'utf8'),fs.readFileSync(path.join(base,'scripts/CF-AutoRank.js'),'utf8'));
+});
+
+test('transient pre-publication backend read retries directly without repeating measurements',async()=>{
+ let failed=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({method,options,requests})=>{
+  if(!failed&&method==='GET'&&options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){
+   failed=true;return {status:502,data:'private diagnostic must not escape'};
+  }
+ }});
+ assert(failed);assert.equal(r.writes.length,1);
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.result.verified,true);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,2560);
+ assert(r.requests.filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy==='DIRECT'&&!x.descriptor));
+ assert(r.logs.some(x=>x.includes('读取后台配置 · 重试 2/3')));
+ assert(!r.logs.join('\n').includes('private diagnostic'));
+});
+
+test('exhausted backend retries retain the failure stage and original subscription',async()=>{
+ let failures=0;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,requests})=>{
+  if(options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){
+   failures++;return {error:'timeout for token='+'f'.repeat(32)+' local-secret',status:0};
+  }
+ }});
+ assert.equal(failures,3);assert.equal(r.writes.length,0);
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);
+ assert.equal(state.stage,'未完成');assert.equal(state.failureStage,'发布前核对');
+ assert.match(state.message,/读取后台配置失败.*请求超时.*3 次/);
+ const status=await run('status|example.net|lite|40|','button',r.store);
+ assert.match(status.output.content,/发布前核对/);assert.equal(status.requests.length,0);
+ const exposed=JSON.stringify([r.logs,r.store,r.output]);
+ for(const secret of ['local-secret','f'.repeat(32),'11111111-1111-4111-8111-111111111111'])assert(!exposed.includes(secret));
+});
+
+test('expired admin session is renewed once for a read without following redirects',async()=>{
+ let expired=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options,requests})=>{
+  if(!expired&&options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){
+   expired=true;return {status:302,headers:{Location:'https://untrusted.example/login'}};
+  }
+ }});
+ assert.equal(r.requests.filter(x=>x.url.endsWith('/login')).length,2);
+ assert.equal(r.writes.length,1);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified,true);
+ assert(!r.requests.some(x=>x.url.startsWith('https://untrusted.example/')));
+});
+
+test('persistent login rejection and forbidden responses are bounded and do not write',async()=>{
+ for(const code of [302,401,403]){
+  const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options})=>{
+   if(options.url.includes('/admin/config.json'))return {status:code,data:'secret challenge response'};
+  }});
+  assert.equal(r.writes.length,0);
+  assert.equal(r.requests.filter(x=>x.url.includes('/admin/config.json')).length,code===403?1:2);
+  assert.equal(r.requests.filter(x=>x.url.endsWith('/login')).length,code===403?1:2);
+  assert.match(r.output.content,new RegExp('HTTP '+code));
+  assert(!JSON.stringify([r.store,r.logs]).includes('secret challenge'));
+ }
+});
+
+test('transient converted-subscription failure after saving is retried instead of rolled back',async()=>{
+ let failed=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,writes})=>{
+  if(!failed&&writes.length&&options.url.includes('&surge')){failed=true;return {status:503};}
+ }});
+ assert(failed);assert.equal(r.writes.length,1);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified,true);
+});
+
+test('lost save response is reconciled by readback and both subscriptions without a second save',async()=>{
+ let lost=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {afterResponse:({method,options})=>{
+  if(!lost&&method==='POST'&&options.url.includes('/admin/ADD.txt')){lost=true;return {error:'timeout'};}
+ }});
+ assert(lost);assert.equal(r.writes.length,1);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified,true);
+ assert.equal(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).length,1);
+ assert(r.requests.some(x=>x.url.includes('&b64'))&&r.requests.some(x=>x.url.includes('&surge')));
+});
+
+test('failed save that was never applied is not blindly retried or reported successful',async()=>{
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({method,options})=>{
+  if(method==='POST'&&options.url.includes('/admin/ADD.txt'))return {error:'timeout'};
+ }});
+ assert.equal(r.writes.length,0);assert.equal(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).length,1);
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);
+ assert.equal(state.stage,'未完成');assert.equal(state.failureStage,'保存与订阅验证');
+ assert.match(state.message,/发布验证失败.*保存节点失败.*请求超时/);
+});
+
+test('network changes while waiting for a backend retry prevent subsequent requests and publication',async()=>{
+ const network={wifi:{ssid:'Synthetic first'}};let failed=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,network,respond:({options,requests})=>{
+  if(options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){
+   failed=true;network.wifi.ssid='Synthetic second';return {status:502};
+  }
+ }});
+ assert(failed);assert.equal(r.writes.length,0);assert.match(r.output.content,/网络变化/);
 });

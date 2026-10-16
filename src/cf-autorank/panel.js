@@ -46,7 +46,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.12 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.13 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
@@ -56,6 +56,7 @@ function progressContent(s,now) {
     const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
     if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
+    if(s.backendRetry)return stage+'\n'+s.backendRetry+' · '+traffic;
     if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'
       +(s.stage==='YouTube Premium 检测'?'通过 '+(premium&&premium.passed||0):'复核 '+(premium&&premium.verified||0))+'/10 · 正文 '+traffic;
     const percent=s.total?' · '+Math.min(100,Math.floor((s.done||0)/s.total*100))+'%':'';
@@ -64,7 +65,7 @@ function progressContent(s,now) {
   if(s.stage==='名称已核对')return '10 个名称已核对 · 国旗 '+(s.nameResult?s.nameResult.selected.filter(e=>e.egress&&e.egress.country).length:0)+'/10\n未运行下载测速 · 请刷新订阅';
   if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对'+(premium&&premium.verified===10?' · Premium 10/10':'')+poolNote+'\n'
     +duration((s.updatedAt||now)-(s.startedAt||s.result&&s.result.startedAt||s.updatedAt||now))+' · '+traffic+' · 请刷新订阅';
-  return s.stage+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');
+  return s.stage+(s.failureStage?' · '+s.failureStage:'')+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');
 }
 function view(kind,s,now,mode,error) {
   const progress=kind==='status';

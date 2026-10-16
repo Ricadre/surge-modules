@@ -6,7 +6,7 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
-| Cloudflare 一键优选 | 0.1.12 · 1280 个轻量初筛 → 最多 160 个下载 → Premium 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
+| Cloudflare 一键优选 | 0.1.13 · 1280 个轻量初筛 → 最多 160 个下载 → Premium 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |

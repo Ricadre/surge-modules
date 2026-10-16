@@ -338,8 +338,16 @@ async function execute(env,opts,pools,poolInfo=null) {
   try {
     publishing=true;await update('保存与订阅验证',0,1);
     await guard();assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
-    const response=await req('POST','/admin/ADD.txt',proposed);
-    assert(response&&response.success===true,'后台未确认保存成功');
+    try {
+      const response=await req('POST','/admin/ADD.txt',proposed);
+      assert(response&&response.success===true,'后台未确认保存成功');
+    } catch(error) {
+      // A lost response does not prove the write failed. Read back first;
+      // never blindly repeat a POST that may already have been applied.
+      if(!error.controlFailure||!error.controlFailure.uncertain)throw error;
+      const check=await snapshot();
+      if(check.cfg.fingerprint!==baseline.cfg.fingerprint||check.list.trim()!==proposed)throw error;
+    }
     outcome.changed=true;
     for(const wait of [0,3000,12000,30000,60000]) {
       if(wait)await env.sleep(wait);
@@ -358,7 +366,7 @@ async function execute(env,opts,pools,poolInfo=null) {
         rollback=restored&&restored.success===true?'已请求恢复备份，需检查订阅传播':'恢复备份未获确认';
       }
     } catch(_) {rollback='无法确认恢复，请检查后台';}
-    throw new Error('发布验证失败；'+rollback);
+    throw new Error('发布验证失败；'+(error.controlFailure?error.message+'；':'')+rollback);
   }
 }
 async function renameOnly(env,opts,pools) {
