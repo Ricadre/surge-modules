@@ -1,0 +1,18 @@
+#!name=YouTube · LLM 翻译字幕
+#!desc=0.1.0 测试版。连接自备字幕翻译后端；中文目标下中文字幕直接放行，合并完全重复的两行中文。脚本自动下载。需重写、脚本、MITM 与已信任证书；先停用旧字幕模块。
+#!version=0.1.0
+#!category=YouTube
+#!homepage=https://github.com/nuvora-f44c84/surge-modules
+#!arguments=backend:caption.example.invalid,target:zh-Hans,dual:true
+#!arguments-desc=backend：已有翻译后端的纯域名，不加 https://、路径或端口；默认值不转发字幕。\ntarget：目标语言，简体中文用 zh-Hans。\ndual：true 为双语，false 为仅译文。\n后端需兼容 /caption?src=...&target=...&dual=...，并由后端保存模型密钥。
+
+# Only the configured backend is added to MITM; no backend or API key is published.
+# \Q...\E treats the parameterized hostname literally in the response regex.
+# Fixed module and script paths; installation details: docs/youtube-llm-captions.md
+
+[Script]
+YouTube.LLM.Captions.Request = type=http-request,pattern=^https?:\/\/(?:www|m)\.youtube\.com\/api\/timedtext\?,script-path=https://gh-proxy.com/https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/YouTube-LLM-Captions.js,argument=backend={{{backend}}}&target={{{target}}}&dual={{{dual}}},timeout=5,engine=jsc
+YouTube.LLM.Captions.Response = type=http-response,pattern=(?i)^(?:https?:\/\/(?:www|m)\.youtube\.com\/api\/timedtext\?|https:\/\/\Q{{{backend}}}\E\/caption(?:\?|$)),requires-body=true,max-size=2097152,script-path=https://gh-proxy.com/https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/YouTube-LLM-Captions.js,argument=backend={{{backend}}}&target={{{target}}}&dual={{{dual}}},timeout=5,engine=jsc
+
+[MITM]
+hostname = %APPEND% www.youtube.com, m.youtube.com, {{{backend}}}

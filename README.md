@@ -12,6 +12,7 @@
 | 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
 | 咪咕视频 · 广告域名补充 | 0.1.0 · 6 个精确域名，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/MiguVideo-AdBlock-Lite.sgmodule) |
 | 航旅纵横 · 轻量去广告 | 0.1.0 · 已知开屏接口及广告请求标识，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Umetrip-AdBlock-Lite.sgmodule) |
+| YouTube · LLM 翻译字幕 | 0.1.0 · 自备后端、默认中文双语、重复中文去重，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/YouTube-LLM-Captions.sgmodule) |
 
 ## Cloudflare 一键优选（预览版）
 
@@ -56,6 +57,14 @@
 航旅模块拦截已知开屏接口，并用请求头中的两个精确广告标识过滤请求，不读取正文。需要重写、脚本、MITM 和已信任证书；JS 由模块通过镜像自动下载，无需另放本地文件。当前 App 的完整兼容性待实机验证。
 
 两个模块均提供固定远程地址。迁移时停用同名本地模块，再启用远程版本；不要同时启用两份。安装链接（含镜像）、影响范围、上游来源和回退方法见[轻量去广告说明](docs/lite-adblocks.md)。
+
+## YouTube · LLM 翻译字幕（测试版）
+
+连接使用者自己的字幕翻译后端，默认简体中文双语。中文目标下的中文字幕直接放行；只合并完全相同的两行中文字幕，保留时间信息和正常双语。模块自动下载脚本。
+
+后端域名、目标语言和双语开关通过 Surge 参数填写，公开文件不含私人服务地址或密钥。后端会收到字幕请求 URL，并需独立提供兼容的翻译接口；本仓库不提供公共翻译服务。安装时停用旧版 Proxy / Translate 字幕模块，避免重复改写。
+
+固定导入链接（含镜像）、接口约定、数据范围和回退步骤见[翻译字幕说明](docs/youtube-llm-captions.md)。
 
 ## X 模块已删除
 
