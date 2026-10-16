@@ -69,12 +69,12 @@ test('top ten deduplicates IPs and uses conservative scores',()=>{
 test('successful end-to-end mock publishes only ADD.txt and verifies both subscription formats',async()=>{
  const f=fixture();const r=await C.execute(f.env,f.opts,pools);
  assert(r.changed&&r.verified);assert.equal(r.selected.length,10);assert.equal(new Set(r.selected.map(x=>x.ip)).size,10);assert.equal(f.posts.length,1);
- assert.equal(r.candidateCount,160);assert.equal(r.downloadCandidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
+ assert.equal(r.candidateCount,1280);assert.equal(r.downloadCandidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
  assert(r.selected.every(x=>x.samples.length===2));
 });
-test('default lite screens 1280 with small HEAD requests then limits bandwidth downloads to 320',async()=>{
+test('default lite screens 1280 with small HEAD requests then limits bandwidth downloads to 160',async()=>{
  const f=fixture(),original=f.env.probe,light=[],downloads=[];let active=0,maxActive=0;
- f.opts.limit=320;
+ f.opts=C.settings('start|example.net');
  f.env.probe=async spec=>{
   if(spec.url.includes('cf_rank_light=')) {
    assert.equal(spec.method,'HEAD');assert.equal(spec.headers.Range,undefined);assert(!spec.binary);
@@ -88,13 +88,13 @@ test('default lite screens 1280 with small HEAD requests then limits bandwidth d
  const r=await C.execute(f.env,f.opts,pools);
  assert(r.verified);assert.equal(r.candidateCount,1280);assert.equal(r.lightRequests,2560);
  assert.equal(light.length,2560);assert.equal(new Set(light.map(x=>x.url)).size,2560);assert(maxActive<=8&&maxActive>1);
- assert.equal(r.downloadCandidateCount,320);assert.deepEqual(r.downloadReasons,{current:10,latency:248,exploration:62});
+ assert.equal(r.downloadCandidateCount,160);assert.deepEqual(r.downloadReasons,{current:10,latency:120,exploration:30});
  const sizes=downloads.map(s=>{const m=/bytes=(\d+)-(\d+)/.exec(s.headers.Range);return Number(m[2])-Number(m[1])+1;});
- assert.equal(sizes.filter(n=>n===131072).length,320);assert.equal(sizes.filter(n=>n===2000000).length,48);
- assert.equal(r.bytes,320*131072+48*2000000);
- assert.equal(new Set(r.downloadCandidates.map(e=>e.ip)).size,320);
+ assert.equal(sizes.filter(n=>n===131072).length,160);assert.equal(sizes.filter(n=>n===2000000).length,48);
+ assert.equal(r.bytes,160*131072+48*2000000);
+ assert.equal(new Set(r.downloadCandidates.map(e=>e.ip)).size,160);
  assert(f.progress.some(p=>p.stage==='低流量连通与延迟初筛'&&p.total===1280&&p.done===1280));
- assert(f.progress.some(p=>p.stage==='下载初筛'&&p.total===320));
+ assert(f.progress.some(p=>p.stage==='下载初筛'&&p.total===160));
 });
 test('first failed light probe skips its second; too few stable entries never download or publish',async()=>{
  const f=fixture(),attempts=new Map();let downloads=0;
@@ -104,7 +104,15 @@ test('first failed light probe skips its second; too few stable entries never do
   return {status:503,ms:100};
  };
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/不足 10/);
- assert.equal(attempts.size,160);assert([...attempts.values()].every(n=>n===1));assert.equal(downloads,0);assert.equal(f.posts.length,0);
+ assert.equal(attempts.size,1280);assert([...attempts.values()].every(n=>n===1));assert.equal(downloads,0);assert.equal(f.posts.length,0);
+});
+test('full mode keeps 2560 light candidates while default downloads fall to 160',async()=>{
+ const f=fixture();f.opts=C.settings('start|example.net|full');
+ const r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.candidateCount,2560);assert.equal(r.lightRequests,5120);
+ assert.equal(r.downloadCandidateCount,160);assert.equal(r.selected.length,10);
+ assert.deepEqual(r.downloadReasons,{current:10,latency:120,exploration:30});
+ assert.equal(r.bytes,160*524288+24*2*8000000);
 });
 test('flaky second light responses cannot enter the download shortlist',async()=>{
  const f=fixture(),probe=f.env.probe,attempts=new Map(),failed=new Set(),downloaded=new Set();

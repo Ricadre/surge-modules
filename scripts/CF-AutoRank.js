@@ -1,11 +1,11 @@
-// CF AutoRank v0.1.10. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.11. Credentials are entered by the user; never bundle secrets.
 (function (root) {
 'use strict';
 const MODES = {
   lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24 },
   full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24 }
 };
-const LIGHT_SCREEN={lite:{multiplier:4,concurrency:8,timeout:4},full:{multiplier:8,concurrency:8,timeout:4},maxCandidates:4096};
+const LIGHT_SCREEN={lite:{candidates:1280,concurrency:8,timeout:4},full:{candidates:2560,concurrency:8,timeout:4}};
 const TLS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 function assert(ok, message) { if (!ok) throw new Error(message); }
 function ipNumber(ip) {
@@ -49,7 +49,7 @@ function base64Decode(s) {
 }
 function settings(argument) {
   const parts=String(argument||'').split('|');
-  const [action='status',host='',mode='lite',count='320']=parts;
+  const [action='status',host='',mode='lite',count='160']=parts;
   const password=parts.slice(4).join('|');
   assert(['start','status','cancel','verify','rename'].includes(action),'未知操作');
   assert(/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(host),'请填写后台域名，不含 https:// 或路径');
@@ -197,7 +197,8 @@ async function pool(items,n,fn) {
 }
 function median(list){const s=list.slice().sort((a,b)=>a-b);if(!s.length)return null;const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 function topDistinct(rows,count) { const sorted=rows.filter(x=>x.valid).slice().sort((a,b)=>b.score-a.score||(a.latency||0)-(b.latency||0)); const seen=new Set();return sorted.filter(x=>{if(seen.has(x.ip))return false;seen.add(x.ip);return true;}).slice(0,count); }
-function scanCount(limit,mode) {return Math.min(LIGHT_SCREEN.maxCandidates,limit*LIGHT_SCREEN[mode].multiplier);}
+// Light screening coverage is independent of the configurable download cap.
+function scanCount(mode) {return LIGHT_SCREEN[mode].candidates;}
 function lightValid(r) {return !!r&&!r.error&&r.status===204&&Number.isFinite(r.ms)&&r.ms>0;}
 function pickDownloads(rows,current,limit,rng=Math.random) {
   const keys=new Set(current.map(e=>e.key)),seen=new Set();
@@ -236,7 +237,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   const baseline=await snapshot(true);
   assert(sameEntries(await raw(baseline.cfg),baseline.entries),'实际订阅与后台列表尚未一致，请稍后再试');
   await env.backup({host:opts.host,list:baseline.list,entries:baseline.entries,createdAt:start});
-  const entries=candidates(baseline.entries,samplingPools,Math.max(scanCount(opts.limit,opts.mode),baseline.entries.length),env.random,official);
+  const entries=candidates(baseline.entries,samplingPools,Math.max(scanCount(opts.mode),baseline.entries.length),env.random,official);
   await update('低流量连通与延迟初筛',0,entries.length);
   const reachable=[];let done=0;
   async function connect(e,target) {
@@ -511,7 +512,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.10 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.11 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const traffic=Math.round((s.bytes||0)/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
@@ -552,7 +553,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.10';
+const UA='CF-Edge-AutoRank/0.1.11';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}

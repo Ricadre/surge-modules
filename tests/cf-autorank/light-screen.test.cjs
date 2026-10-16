@@ -2,9 +2,13 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const C=require('../../src/cf-autorank/core.js');
 function random(seed){return ()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296;};}
 function entry(n,ms=n+1){const ip=C.numberIP(C.ipNumber('104.16.0.0')+n+1);return {ip,port:443,key:ip+':443',lightSamples:[{status:204,ms},{status:204,ms:ms+10}]};}
-test('lite and full expand light screening while preserving the download cap and upper bound',()=>{
- assert.equal(C.scanCount(320,'lite'),1280);assert.equal(C.scanCount(320,'full'),2560);
- assert.equal(C.scanCount(1024,'lite'),4096);assert.equal(C.scanCount(1024,'full'),4096);
+test('lite and full keep independent fixed light-screen coverage',()=>{
+ for(const limit of [40,80,160,320,1024]) {
+  for(const [mode,total] of [['lite',1280],['full',2560]]) {
+   const opts=C.settings('start|example.net|'+mode+'|'+limit+'|');
+   assert.equal(opts.limit,limit);assert.equal(C.scanCount(opts.mode),total);
+  }
+ }
  assert.equal(C.LIGHT_SCREEN.lite.concurrency,8);assert.equal(C.LIGHT_SCREEN.full.concurrency,8);
 });
 test('only successful finite HTTP 204 measurements count as light-probe results',()=>{
@@ -13,13 +17,13 @@ test('only successful finite HTTP 204 measurements count as light-probe results'
 });
 test('download shortlist keeps passing current nodes, mostly low latency and a sample of others',()=>{
  const rows=Array.from({length:1280},(_,i)=>entry(i)),current=rows.slice(-10);
- const selected=C.pickDownloads(rows,current,320,random(42));
- assert.equal(selected.length,320);assert.equal(new Set(selected.map(e=>e.ip)).size,320);
+ const selected=C.pickDownloads(rows,current,160,random(42));
+ assert.equal(selected.length,160);assert.equal(new Set(selected.map(e=>e.ip)).size,160);
  assert.deepEqual(selected.filter(e=>e.downloadReason==='current').map(e=>e.key),current.map(e=>e.key));
- assert.deepEqual(selected.filter(e=>e.downloadReason==='latency').map(e=>e.key),rows.slice(0,248).map(e=>e.key));
- const exploration=selected.filter(e=>e.downloadReason==='exploration');assert.equal(exploration.length,62);
+ assert.deepEqual(selected.filter(e=>e.downloadReason==='latency').map(e=>e.key),rows.slice(0,120).map(e=>e.key));
+ const exploration=selected.filter(e=>e.downloadReason==='exploration');assert.equal(exploration.length,30);
  assert(exploration.some(e=>e.lightLatency>1000));
- assert.notDeepEqual(exploration,C.pickDownloads(rows,current,320,random(567)).filter(e=>e.downloadReason==='exploration'));
+ assert.notDeepEqual(exploration,C.pickDownloads(rows,current,160,random(567)).filter(e=>e.downloadReason==='exploration'));
 });
 test('shortlist uses the slower of two observations, rejects flaky entries and deduplicates IPs',()=>{
  const jitter=entry(0,1);jitter.lightSamples[1].ms=1000;

@@ -60,10 +60,10 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
  assert.equal(verified.poolInfo.source,'live-text');
  assert.equal(verified.result.candidateSources.current,10);
- assert.equal(verified.result.candidateSources.official,113);
- assert.equal(verified.result.candidateSources.legacy,37);
- assert.equal(verified.result.candidateCount,160);assert.equal(verified.result.downloadCandidateCount,40);
- const light=r.requests.filter(x=>x.url.includes('cf_rank_light='));assert.equal(light.length,320);
+ assert.equal(verified.result.candidateSources.official,953);
+ assert.equal(verified.result.candidateSources.legacy,317);
+ assert.equal(verified.result.candidateCount,1280);assert.equal(verified.result.downloadCandidateCount,40);
+ const light=r.requests.filter(x=>x.url.includes('cf_rank_light='));assert.equal(light.length,2560);
  assert(light.every(x=>x.method==='HEAD'&&x.descriptor&&!x.policy));
 });
 test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
@@ -170,6 +170,7 @@ test('adapter supports online country lookup when the native GeoIP database is e
 test('published module has static fallback panels and resolves every action to its versioned bundle',()=>{
  const base=path.resolve(root,'../..'),moduleText=fs.readFileSync(path.join(base,'modules/CF-AutoRank.sgmodule'),'utf8');
  const version=/^#!version=(.+)$/m.exec(moduleText)[1];
+ assert.match(moduleText,/^#!arguments=backend,mode:lite,candidates:160,admin_password$/m);
  const panelLines=moduleText.split('[Panel]')[1].trim().split('\n');assert.equal(panelLines.length,2);
  const scriptLines=moduleText.split('[Script]')[1].split('[Panel]')[0].trim().split('\n').filter(Boolean);
  assert.equal(scriptLines.length,5);

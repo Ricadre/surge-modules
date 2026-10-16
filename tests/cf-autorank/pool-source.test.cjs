@@ -70,7 +70,7 @@ test('current out-of-pool endpoints are retained exactly without widening random
  for(const ip of ['127.0.0.1','192.168.1.1','10.0.0.1','203.0.113.1'])assert.throws(()=>C.includeCurrent(ip+':443#Bad',legacy));
  assert.throws(()=>C.includeCurrent('9.9.9.9:80#Bad',legacy));
 });
-test('lite download sizes and default 320 count are unchanged',()=>{
+test('lite keeps sample sizes and defaults to 160 download candidates',()=>{
  assert.deepEqual(C.MODES.lite,{screenBytes:131072,sampleBytes:2000000,finalists:24});
- const settings=C.settings('start|example.net');assert.equal(settings.mode,'lite');assert.equal(settings.limit,320);
+ const settings=C.settings('start|example.net');assert.equal(settings.mode,'lite');assert.equal(settings.limit,160);
 });
