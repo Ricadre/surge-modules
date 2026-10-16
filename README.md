@@ -9,7 +9,7 @@
 | Cloudflare 一键优选 | 0.1.11 · 1280 个轻量初筛 → 最多 160 个下载 → 前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
-| 小宇宙开屏广告过滤 | 0.1.0 · 仅处理开屏接口，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
+| 小宇宙开屏广告过滤 | 0.1.1 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
 
 ## Cloudflare 一键优选（预览版）
 

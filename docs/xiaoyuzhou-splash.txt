@@ -1,4 +1,4 @@
-小宇宙开屏广告过滤（测试版）0.1.0
+小宇宙开屏广告过滤（测试版）0.1.1
 
 远程地址
 https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule
@@ -13,7 +13,7 @@ MITM 只追加 api.xiaoyuzhoufm.com；该主机的其他 HTTPS 请求也会经�
 但只有上述开屏路径会被本模块替换。规则范围检查不代表所有 App 功能已实测。
 
 安装与使用
-在 Surge 的模块页面通过上述 Raw 地址安装，确认版本 0.1.0，并勾选启用。
+在 Surge 的模块页面通过上述 Raw 地址安装，确认版本 0.1.1，并勾选启用。
 需要 Surge iOS 5.9.1+、开启重写与 MITM，且 Surge 证书已安装并完全信任。
 避免同时启用其他处理小宇宙开屏的重写规则，以免无法判断实际生效来源。
 安装后彻底退出并重开小宇宙；已缓存的广告可能要联网刷新后再次启动才消失。

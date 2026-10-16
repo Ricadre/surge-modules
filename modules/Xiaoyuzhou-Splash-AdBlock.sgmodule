@@ -1,6 +1,6 @@
 #!name=小宇宙开屏广告过滤（测试版）
 #!desc=仅处理 v1/flash-screen/list 开屏接口，返回空 JSON；不改写订阅、搜索和播放接口。需 Surge iOS 5.9.1+，开启重写与 MITM，并信任证书。缓存广告可能需后续启动才消失。
-#!version=0.1.0
+#!version=0.1.1
 #!homepage=https://github.com/Ricadre/surge-modules
 
 # 独立模块，无外部脚本和整域名封锁。
