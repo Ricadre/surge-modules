@@ -1,7 +1,7 @@
 豆瓣开屏广告过滤
 
 模块地址：
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule
+https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule
 
 范围：仅处理 api.douban.com/v2/app_ads/splash 与 splash_preload。
 需要 Surge iOS 5.14.0+、重写功能、MITM，以及已安装并完全信任的 Surge CA。

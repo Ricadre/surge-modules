@@ -22,10 +22,10 @@
 日常使用统一安装下面这个不带版本号的固定地址，后续发布会同步更新它。在 Surge 的模块页面选择通过 URL 安装，粘贴：
 
 ```text
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule
+https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule
 ```
 
-[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank.sgmodule)
+[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnuvora-f44c84%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank.sgmodule)
 
 模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.11.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
 

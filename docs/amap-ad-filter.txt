@@ -5,7 +5,7 @@
 具体覆盖范围以本版本模块规则为准，App 接口变化可能影响效果。
 
 安装/更新
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule
+https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule
 需要 Surge iOS 5.14.0+，重写、MITM 和已安装且完全信任的 Surge 证书。
 已有用户更新同一远程模块，确认版本 0.2.0，彻底退出高德并重新打开。
 避免同时启用处理相同接口的其他模块，以便判断规则是否命中。

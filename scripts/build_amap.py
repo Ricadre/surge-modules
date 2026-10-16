@@ -90,7 +90,7 @@ def build():
         "#!name=高德地图推广过滤（测试版）",
         "#!desc=0.2.0 测试版。按接口结构清理我的任务、活动、推荐流、借钱及卡片内推广；保留订单收藏钱包足迹等功能。取消旧卡片白名单。需 Surge iOS 5.14+、重写、MITM 及已信任证书。先停用其他高德模块。",
         "#!version=0.2.0",
-        "#!homepage=https://github.com/Ricadre/surge-modules",
+        "#!homepage=https://github.com/nuvora-f44c84/surge-modules",
         "",
         "# 安装说明、影响范围及回退方法：docs/amap-ad-filter.txt",
         "# 使用内置 JQ，无外部脚本依赖。仅匹配下列接口，兼容 /ws/ 和 //ws/。",

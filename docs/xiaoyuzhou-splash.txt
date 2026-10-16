@@ -1,7 +1,7 @@
 小宇宙广告过滤（测试版）0.2.0
 
 远程地址
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule
+https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule
 
 范围与实现
 仅匹配 api.xiaoyuzhoufm.com 的以下两个完整路径，支持末尾斜杠和查询参数：

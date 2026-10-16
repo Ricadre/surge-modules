@@ -6,10 +6,10 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
-| Cloudflare 一键优选 | 0.1.11 · 1280 个轻量初筛 → 最多 160 个下载 → 前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
-| 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
-| 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
-| 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
+| Cloudflare 一键优选 | 0.1.11 · 1280 个轻量初筛 → 最多 160 个下载 → 前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
+| 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
+| 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
+| 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
 
 ## Cloudflare 一键优选（预览版）
 
@@ -19,7 +19,7 @@
 
 手动刷新主面板：**更新池与备份 → 1280 个轻量初筛 → 最多 160 个下载初筛 → 前 24 个双次复测 → 前 10 个出口检测 → 保存并验证订阅**。成功后手动刷新原 CF 订阅。进度面板及自动刷新只读状态，不启动测速。完整顺序与请求路径见[操作流程](docs/cf-autorank.md#点击面板刷新后会发生什么)。
 
-以后统一使用[固定模块地址](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule)。从旧版本地址迁移一次后，在 Surge 中更新同一个模块即可，后台参数保存在本机。带版本号的文件仅用于复现和回退；内部 JS 引用随模块更新。
+以后统一使用[固定模块地址](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule)。从旧版本地址迁移一次后，在 Surge 中更新同一个模块即可，后台参数保存在本机。带版本号的文件仅用于复现和回退；内部 JS 引用随模块更新。
 
 “Cloudflare 一键优选”使用橙色云朵，点一次运行完整流程，下方两行显示上次成功时间、当时的 Wi-Fi/蜂窝网络、节点数、档位和数据量。独立的“Cloudflare 测速进度”面板只读本机记录，切回策略页面或点击刷新可查看阶段、数量、耗时及最近活动；长期无活动会提示可能暂停或中断，不保证 iOS 后台持续运行。
 

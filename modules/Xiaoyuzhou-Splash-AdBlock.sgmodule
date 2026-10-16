@@ -1,7 +1,7 @@
 #!name=小宇宙广告过滤（测试版）
 #!desc=过滤开屏，以及首页明确标记为运营推广或广告的横幅；保留普通推荐、编辑精选、榜单和顶部功能入口。需 Surge iOS 5.14+、重写、MITM 及已信任证书。更新后彻底退出并重开，缓存内容可能需后续启动才消失。
 #!version=0.2.0
-#!homepage=https://github.com/Ricadre/surge-modules
+#!homepage=https://github.com/nuvora-f44c84/surge-modules
 
 # 独立模块，无外部脚本和整域名封锁。
 # 仅匹配完整开屏列表和首页列表路径；不清空首页、搜索、分类或 AI 功能。
