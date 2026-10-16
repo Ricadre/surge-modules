@@ -7,7 +7,7 @@
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
 | Cloudflare 一键优选 | 0.1.9 · 每轮更新官方候选范围、默认省流、出口国旗，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
-| 高德地图推广过滤 | 0.1.0 · 测试版，尚未完成实机验证 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
+| 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | X 信息流广告过滤 | 0.1.1 · 已停用，无过滤功能 | [停用版 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/X-AdFilter-Experimental.sgmodule) |
 
@@ -21,11 +21,11 @@
 
 ## 高德地图推广过滤（测试版）
 
-高德模块为手动安装的测试版，覆盖开屏、首页、搜索和个人主页的部分推广。兼容性以接口结构及规则匹配情况为准。
+高德模块按接口结构清理“我的”任务、活动轮播、推荐流、借钱入口及卡片内推广，保留订单、收藏、足迹和语音等功能。规则匹配不代表所有 App 版本均兼容；未知字段尽量保留。
 
-在 Surge 模块页面从 Raw 地址安装，需要 Surge iOS 5.14.0+、重写、MITM 及已信任的证书。先停用或删除旧的 **Amap AdBlock - Syntax Fix** 和其他高德模块，再启用本模块并彻底退出、重开高德。此前旧模块只执行了停用，尚未删除；发布不会自动替换手机上的旧模块。
+在 Surge 模块页面从 Raw 地址安装或更新，确认版本 **0.2.0**。需要 Surge iOS 5.14.0+、重写、MITM 及已信任的证书。其他高德模块保持停用，再启用本模块并彻底退出、重开高德。发布不会自动替换手机上的旧模块。
 
-首页和“我的”采用卡片保留列表，可能同时隐藏部分非广告服务卡片；普通搜索结果、路线接口、订单接口不在拦截范围内，但仍需实机检查正常加载。使用内置 JQ，无远程脚本依赖。详细范围、已知限制、测试方法和含手动 MITM 条目的回退说明见[高德模块说明](docs/amap-ad-filter.txt)。
+取消旧版首页和“我的”的卡片保留列表，保留未知卡片及正常服务。订单、收藏、待评价、钱包、足迹、语音／车标设置、家人地图、工具、好友动态和勋章入口保留。使用内置 JQ，无远程脚本依赖。详细范围、已知限制和回退方法见[高德模块说明](docs/amap-ad-filter.txt)。
 
 ## 豆瓣开屏广告过滤
 

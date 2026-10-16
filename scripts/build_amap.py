@@ -6,8 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HOST = r"https://(?:m5|m5-x|info)\.amap\.com/{1,2}ws/"
 SUFFIX = r"/?(?:\?.*)?$"
 
-# These helpers touch only existing objects/arrays. A completely unfamiliar
-# card list passes through; the allowlist activates only with a known anchor.
+# Touch only existing objects/arrays; keep unknown cards and normal functions.
 HELPERS = """
 def obj($p; f):
   if (try (getpath($p) | type) catch null) == "object"
@@ -15,26 +14,29 @@ def obj($p; f):
 def arr($p; f):
   if (try (getpath($p) | type) catch null) == "array"
   then setpath($p; getpath($p) | f) else . end;
-def keep_cards($keys):
-  if all(.[]; type == "object" and (.dataKey | type) == "string")
-     and any(.[]; .dataKey as $k | $keys | index($k) != null)
-  then map(select(.dataKey as $k | $keys | index($k) != null)) else . end;
 """
 
 RULES = [
     ("splash", "开屏广告列表", r"valueadded/alimama/splash_screen", """
       arr(["data", "ad"]; [])
     """),
-    ("home", "首页：保留继续导航、常去地点、登录和车辆位置卡片", r"faas/amap-navigation/main-page", """
-      obj(["data"];
-        arr(["cardList"]; keep_cards(["ContinueNavigationCard", "FrequentLocation", "LoginCard"]))
-        | arr(["mapBizList"]; keep_cards(["FindCarVirtualCard"]))
-      )
-    """),
-    ("profile", "我的：精简卡片、去提示与勋章；保留订单、足迹及其他顶层数据", r"shield/dsp/profile/index/nodefaas(?:v3)?", """
-      obj(["data"]; del(.tipData, .memberInfo)
-        | arr(["cardList"]; keep_cards(["MyOrderCard"]))
-      )
+    ("profile", "我的：按接口字段清理推广，保留足迹、服务入口、语音车标、好友和勋章", r"shield/dsp/profile/index/nodefaas(?:v3)?", """
+      def is_card($key): type == "object" and .dataKey == $key and .dataType == $key;
+      def is_promotion:
+        is_card("MineMemberRecommendTaskCardV2") or is_card("PopularActivitiesCardV5")
+        or is_card("PopularActivitiesCardV2") or is_card("ContentCenterFeedCard");
+      def clean_entrances:
+        map(select((try ((.id == 30 or .id == "30") and .title == "借钱") catch false) | not));
+      arr(["data", "cardList"];
+        map(select((try is_promotion catch false) | not)
+          | if type != "object" then .
+            elif is_card("MineNewFootprintCard") then obj(["content"]; del(.operation_resource))
+            elif is_card("MineNewVirtualAssetCardV3") then
+              arr(["content", "ownedList"]; map(obj([]; del(.bottomTips))))
+            elif is_card("MineNewBEntranceCardV4") then
+              arr(["content", "entranceList_1"]; clean_entrances)
+              | arr(["content", "entranceList_2"]; clean_entrances)
+            else . end))
     """),
     ("config", "已知推广配置：不删除地图图层、天气或足迹配置", r"shield/frogserver/aocs/updatable/1", """
       obj(["data"];
@@ -86,13 +88,14 @@ LOCAL_PATHS = [r"shield/search/new_hotword", r"shield/search_poi/tips_adv"]
 def build():
     lines = [
         "#!name=高德地图推广过滤（测试版）",
-        "#!desc=0.1.0 测试版，尚未完成实机验证。处理开屏、首页、搜索及我的推广；首页和我的部分非广告卡片也会隐藏。需 Surge iOS 5.14+、重写、MITM 及已信任证书。先停用其他高德模块。",
-        "#!version=0.1.0",
+        "#!desc=0.2.0 测试版。按接口结构清理我的任务、活动、推荐流、借钱及卡片内推广；保留订单收藏钱包足迹等功能。取消旧卡片白名单。需 Surge iOS 5.14+、重写、MITM 及已信任证书。先停用其他高德模块。",
+        "#!version=0.2.0",
         "#!homepage=https://github.com/Ricadre/surge-modules",
         "",
         "# 安装说明、影响范围及回退方法：docs/amap-ad-filter.txt",
         "# 使用内置 JQ，无外部脚本依赖。仅匹配下列接口，兼容 /ws/ 和 //ws/。",
-        "# 页面卡片精简采用保留列表；无法保证所有保留项之外的卡片都属于广告。",
+        "# 根据个人主页接口结构过滤推广，未知卡片原样保留。",
+        "# 不再对首页或我的使用仅保留订单/导航的白名单；正常服务入口优先保留。",
         "# 非 JSON 由 Surge 跳过；未知字段保留；遇到类型错误返回原始 JSON。",
         "[Body Rewrite]",
     ]

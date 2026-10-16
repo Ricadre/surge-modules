@@ -19,7 +19,6 @@ for line in module.splitlines():
 
 endpoints = {
     "splash": "valueadded/alimama/splash_screen",
-    "home": "faas/amap-navigation/main-page",
     "profile": "shield/dsp/profile/index/nodefaasv3",
     "config": "shield/frogserver/aocs/updatable/1",
     "hotword": "shield/search_bff/hotword",
@@ -53,6 +52,7 @@ for pattern, path in zip(local_patterns, ("shield/search/new_hotword", "shield/s
 for path in ("perception/drive/routeInfo", "perception/drive/routePlan", "bus/plan/integrate",
              "shield/search_poi/ordinary_search", "shield/search_business/process/orderList",
              "shield/search/poi/detail", "valueadded/weather/v2", "msgbox/pull",
+             "faas/amap-navigation/main-page",
              "faas/amap-navigation/main-page-assets", "mapapi/hint_text/offline_data"):
     assert not any(re.search(p, "https://m5.amap.com/ws/" + path + "?test=1")
                    for p in [r[0] for r in rules.values()] + local_patterns), path
@@ -74,26 +74,44 @@ def check(name, original, expected):
 
 check("splash", {"code": 1, "data": {"ad": [{"creative": [{}]}], "settings": 123}},
       {"code": 1, "data": {"ad": [], "settings": 123}})
-home = {"data": {"cardList": [{"dataKey": "ContinueNavigationCard", "route": "keep"},
-                              {"dataKey": "FrequentLocation"}, {"dataKey": "LoginCard"},
-                              {"dataKey": "ExamplePromotion"}],
-                 "mapBizList": [{"dataKey": "FindCarVirtualCard"}, {"dataKey": "ExamplePromotion"}],
-                 "map": {"keep": True}}, "code": 1}
-expected = copy.deepcopy(home)
-expected["data"]["cardList"].pop()
-expected["data"]["mapBizList"].pop()
-check("home", home, expected)
-unknown_cards = {"data": {"cardList": [{"dataKey": "UnknownVersionCard"}],
-                          "mapBizList": [None, {"dataKey": "FindCarVirtualCard"}]}}
-check("home", unknown_cards, unknown_cards)
-profile = {"data": {"tipData": {}, "memberInfo": {}, "footPrintV2": {"keep": True},
-                    "topMixedCard": {"keep": True}, "favorites": ["keep"],
-                    "cardList": [{"dataKey": "MyOrderCard", "orders": ["keep"]},
-                                 {"dataKey": "ExamplePromotion"}]}}
+# Field names observed on-device; values below are synthetic, never a capture.
+def card(key, content):
+    return {"dataKey": key, "dataType": key, "weight": 1, "content": content}
+
+
+foot = card("MineNewFootprintCard", {"card_data": {"distance": "synthetic"},
+                                    "operation_resource": {"resource_name": "campaign"}})
+voice = card("MineNewVirtualAssetCardV3", {"ownedList": [
+    {"mainTitle": "语音包", "schema": "amapuri://synthetic/voice", "bottomTips": {"title": "推广"}},
+    {"mainTitle": "车标", "schema": "amapuri://synthetic/car", "bottomTips": {"title": "上新"}}]})
+services = card("MineNewBEntranceCardV4", {"entranceList_1": [
+    {"id": 7, "title": "订单"}, {"id": 8, "title": "收藏"}, {"id": 10, "title": "待评价", "tips": ["keep"]},
+    {"id": 17, "title": "钱包卡券"}, {"id": 30, "title": "借钱"}],
+    "entranceList_2": [{"id": 4, "title": "家人地图"}, {"id": 31, "title": "店铺入驻"},
+                       {"id": 14, "title": "工具箱"}, {"id": 32, "title": "高德运动"}]})
+friend = card("UserCircleCardV3", {"title": "好友动态"})
+medal = card("MineUserEmblemCardV2", {"emblem": {"text": "勋章", "medalNum": 2}})
+promos = [card(k, {"synthetic": True}) for k in ("MineMemberRecommendTaskCardV2",
+          "PopularActivitiesCardV5", "PopularActivitiesCardV2", "ContentCenterFeedCard")]
+unknowns = [card("FutureUsefulCard", {"keep": True}), {"dataKey": "MyOrderCard"},
+            {"dataKey": "PopularActivitiesCardV5", "dataType": "FutureFunctionalType"}, None, 17]
+profile = {"code": 1, "data": {"cardList": [foot, voice, services, friend, medal, *promos, *unknowns],
+                              "tipData": {"keep": True}, "memberInfo": {"keep": True},
+                              "wallet": {"keep": True}, "identity": {"keep": True}}}
 expected = copy.deepcopy(profile)
-del expected["data"]["tipData"], expected["data"]["memberInfo"]
-expected["data"]["cardList"].pop()
+expected["data"]["cardList"] = copy.deepcopy([foot, voice, services, friend, medal, *unknowns])
+del expected["data"]["cardList"][0]["content"]["operation_resource"]
+for asset in expected["data"]["cardList"][1]["content"]["ownedList"]:
+    del asset["bottomTips"]
+expected["data"]["cardList"][2]["content"]["entranceList_1"].pop()
 check("profile", profile, expected)
+edge = {"data": {"cardList": [card("MineNewBEntranceCardV4", {"entranceList_1": [
+    {"id": 30, "title": "future normal function"}, {"id": 99, "title": "借钱"}, None, "future"]}),
+    card("MineNewFootprintCard", {"card_data": {"keep": True}}),
+    card("MineNewVirtualAssetCardV3", {"ownedList": None})]}}
+check("profile", edge, edge)
+assert "keep_cards" not in module
+print("PASS real-world schema: promotions removed, all functional cards and unknown cards preserved")
 check("config", {"data": {"splashscreen": {"value": "ad"}, "operation_layer": {"value": "ad"},
                            "maplayers": {"keep": 1}, "map_weather_switch": {"keep": 1},
                            "footprint": {"keep": 1}, "hotel_loop": "unknown"}},
