@@ -320,7 +320,8 @@ async function execute(env,opts,pools,poolInfo=null) {
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const selected=[];
-  progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,bytes:0};
+  progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,recoveryAttempts:0,recovered:0,bytes:0};
+  progress.premiumFinalFailures=[];
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
   async function stableOne(e) {
@@ -429,6 +430,52 @@ async function execute(env,opts,pools,poolInfo=null) {
     'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
   selected.splice(0,selected.length,...topDistinct(selected,10));
   const observed=new Array(selected.length),geoCache=new Map();
+  function failureText(issue) {
+    const labels={network_timeout:'请求超时',network:'连接失败',region_unavailable:'所在地区明确不支持 Premium',
+      challenge:'遇到验证或同意页面',body:'响应正文不完整或异常',page_format:'无法识别页面结构',
+      region_unknown:'无法确认地区',no_full_premium_offer:'页面未确认完整 Premium 服务',
+      region_changed:'地区前后不一致',expired:'检测记录已超过 10 分钟',future_time:'检测时间晚于当前时间',
+      invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
+    return issue.reason==='http'?'HTTP 请求未成功（'+(issue.httpStatus||'未知')+'）':labels[issue.reason]||'检测结果无法确认';
+  }
+  async function recordFinalFailure(row,index,phase,issue,attempt='initial') {
+    const diagnostic={candidate:index+1,endpoint:row.key,phase,attempt,...issue,recoveryAttempted:attempt==='recovery',recovered:false};
+    progress.premiumFinalFailures.push(diagnostic);
+    await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    return diagnostic;
+  }
+  function finalError(index,phase,issue,recovery=false) {
+    return new Error('候选 '+(index+1)+' · Premium '+(phase==='refresh'?'更新检测':'发布前复核')+
+      '未通过：'+(recovery?'恢复三检失败，':'')+failureText(issue)+'，保留原订阅');
+  }
+  async function finishPremium(row,index) {
+    row.premium.samples.push(await premiumProbe(row));
+    const issue=premium.failure(row.premium,env.now());
+    if(!issue)return;
+    const diagnostic=await recordFinalFailure(row,index,'final',issue);
+    if(!issue.retryable)throw finalError(index,'final',issue);
+    // One bounded recovery is permitted only for an unambiguous third-sample
+    // transport failure. Old evidence is not reused in the replacement trio.
+    diagnostic.recoveryAttempted=true;progress.premium.recoveryAttempts++;
+    await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    await guard();await env.sleep(1000);await guard();
+    const replacement={status:'available',region:row.premium.region,samples:[]};
+    for(let attempt=0;attempt<3;attempt++) {
+      const sample=await premiumProbe(row);replacement.samples.push(sample);
+      const problem=premium.failure(replacement,env.now());
+      const sampleValid=sample.status==='available'&&sample.reason==='full_premium_offer'&&sample.region===replacement.region&&
+        Number.isFinite(sample.checkedAt)&&sample.checkedAt<=env.now()&&env.now()-sample.checkedAt<=premium.MAX_AGE;
+      // Healthy partial trios are expected while collecting the first two.
+      // Any real failure, including a different previously confirmed country,
+      // stops immediately; this recovery is never recursively retried.
+      if(problem&&(!sampleValid||problem.reason!=='incomplete'||attempt===2)) {
+        await recordFinalFailure(row,index,'final',problem,'recovery');
+        throw finalError(index,'final',problem,true);
+      }
+    }
+    row.premium=replacement;diagnostic.recovered=true;progress.premium.recovered++;
+    await update('出口与 Premium 最终复核',progress.premium.verified,10);
+  }
   await update('出口与 Premium 最终复核',0,10);
   await pool(selected,4,async(e,index)=>{
     const row={...e,egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
@@ -436,11 +483,14 @@ async function execute(env,opts,pools,poolInfo=null) {
     // this step. All nodes still need three fresh, matching Premium responses.
     if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
       const result=await premiumPair(row);
-      assert(result.status==='available','Premium 更新检测未通过，保留原订阅');
+      if(result.status!=='available') {
+        const issue=premium.failure(result,env.now());
+        await recordFinalFailure(row,index,'refresh',issue);
+        throw finalError(index,'refresh',issue);
+      }
       row.premium=result;progress.premium.refreshed++;
     }
-    row.premium.samples.push(await premiumProbe(row));
-    assert(premium.qualified(row.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
+    await finishPremium(row,index);
     observed[index]=row;
     progress.premium.verified++;await update('出口与 Premium 最终复核',progress.premium.verified,10);
   });
@@ -454,6 +504,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
+  outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
   outcome.lightScreen=light.stats;
   function finishOutcome(){outcome.stageTimings=timingSnapshot();outcome.finishedAt=env.now();return outcome;}

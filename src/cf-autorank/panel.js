@@ -46,7 +46,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.17 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.18 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
@@ -61,7 +61,7 @@ function progressContent(s,now) {
     if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
     if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
     if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;
-    if(s.stage==='出口与 Premium 最终复核')return stage+'\nPremium 复核 '+(premium&&premium.verified||0)+'/10 · 正文 '+traffic;
+    if(s.stage==='出口与 Premium 最终复核')return stage+'\nPremium 复核 '+(premium&&premium.verified||0)+'/10'+(premium&&premium.recoveryAttempts?' · 恢复 '+(premium.recovered||0)+'/'+premium.recoveryAttempts:'')+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'&&premium&&premium.eligible!==undefined)return stage+'\n待复测 '+premium.eligible+' 个 · 正文 '+traffic;
     if(s.stage==='低流量连通与延迟初筛'||s.stage==='轻量初筛降载复核')return stage+'\n并发 '+(s.lightConcurrency||8)+' · '+duration(now-(s.startedAt||now))+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'

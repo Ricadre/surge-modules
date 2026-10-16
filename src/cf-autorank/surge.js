@@ -12,7 +12,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.17';
+const UA='CF-Edge-AutoRank/0.1.18';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -40,12 +40,32 @@ function touch(s){
 }
 function done(title,content,error,notify) {
   if(finished)return;finished=true;
-  console.log(title+'\n'+content);
   const isPanel=typeof $input==='object'&&$input&&$input.purpose==='panel';
   const state=stateKey?read():{};
+  // A failed run keeps a short visible message, but copying its notification
+  // includes the saved failure context and timings, just like a successful run.
+  const detail=error&&ownsRun&&state.ownerId===ownerId&&state.stage==='未完成'?statusText(state):content;
+  console.log(title+'\n'+detail);
   const panel=ui.view(opts&&opts.action==='status'?'status':'main',state,Date.now(),opts&&opts.mode,error?content:null);
-  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,error||opts&&['rename','verify'].includes(opts.action)?content:panel.content+(state.stage==='完成'?'\n请刷新原 CF 订阅':''),{sound:false,action:'clipboard',text:title+'\n'+content});
+  if(notify&&typeof $notification!=='undefined')$notification.post(title,networkLabel,error||opts&&['rename','verify'].includes(opts.action)?content:panel.content+(state.stage==='完成'?'\n请刷新原 CF 订阅':''),{sound:false,action:'clipboard',text:title+'\n'+detail});
   $done(isPanel?panel:{title,content,icon:'cloud.fill','icon-color':error?'#E05252':'#F48120'});
+}
+function premiumFailureText(value){
+  if(!value||typeof value!=='object')return null;
+  const reasons={network_timeout:'请求超时',network:'连接失败',http:'HTTP 响应异常',region_unavailable:'地区不可用',challenge:'出现验证页面',body:'正文不完整或异常',page_format:'页面格式未确认',region_unknown:'地区未确认',no_full_premium_offer:'未确认完整 Premium 购买入口',region_changed:'地区发生变化',expired:'检测记录过期',future_time:'检测时间晚于当前时间',invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
+  const candidate=Number.isInteger(value.candidate)&&value.candidate>=1&&value.candidate<=10?value.candidate:'?';
+  const phase=value.phase==='refresh'?'更新检测':value.phase==='final'?'发布前复核':'检测';
+  const attempt=value.attempt==='recovery'?'恢复复测':'首次';
+  const reason=Object.prototype.hasOwnProperty.call(reasons,value.reason)?reasons[value.reason]:'原因未确认';
+  const lines=['候选 '+candidate+' · '+phase+' / '+attempt+' · '+reason];
+  if(Number.isInteger(value.index)&&value.index>=0&&value.index<=2)lines.push('第 '+(value.index+1)+' 检');
+  if(Number.isInteger(value.httpStatus)&&value.httpStatus>=100&&value.httpStatus<=599)lines.push('HTTP '+value.httpStatus);
+  if(value.networkError==='timeout')lines.push('网络超时');else if(value.networkError==='connection')lines.push('连接错误');
+  const regions=Array.isArray(value.regions)?value.regions.filter(x=>typeof x==='string'&&/^[A-Z]{2}$/.test(x)).slice(0,3):[];
+  if(regions.length)lines.push('地区 '+regions.join(' → '));
+  if(Number.isFinite(value.oldestAgeMs)&&value.oldestAgeMs>=0)lines.push('最早记录 '+Math.round(value.oldestAgeMs/1000)+'秒前');
+  if(value.recovered===true)lines.push('已恢复');else if(value.recoveryAttempted===true)lines.push('已尝试恢复');
+  return lines.join(' · ');
 }
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
@@ -58,6 +78,9 @@ function statusText(s){
   const supplement=s.supplement||s.result&&s.result.supplement;
   if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
   if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+'/10');
+  if(premium&&Number.isInteger(premium.recoveryAttempts))lines.push('Premium 恢复：尝试 '+premium.recoveryAttempts+' 个 · 恢复 '+(Number.isInteger(premium.recovered)?premium.recovered:0)+' 个');
+  const failures=s.premiumFinalFailures||s.result&&s.result.premiumFinalFailures;
+  if(Array.isArray(failures))for(const failure of failures.slice(0,20)){const detail=premiumFailureText(failure);if(detail)lines.push('Premium 最终检测：'+detail);}
   const timings=s.result&&s.result.stageTimings||s.stageTimings;
   if(timings)lines.push('各阶段耗时：'+Object.entries(timings).filter(([,ms])=>ms>=1000).map(([stage,ms])=>stage+' '+Math.round(ms/1000)+'秒').join(' · '));
   const light=s.result&&s.result.lightScreen||s.lightScreen;
@@ -217,7 +240,8 @@ try {
     cancelled:async()=>{const s=read();if(!isOwner(s))return true;if(s.cancelRequested)ownedWrite({updatedAt:Date.now()},s);return !!s.cancelRequested;},
     progress:async p=>{const old=requireOwner();storageDiagnostics.progressUpdates++;
       latestProgress={...p,startedAt:started,stageTimings:{...preludeTimings,...p.stageTimings},ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true};
-      const checkpoint=p.stage!==old.stage||p.done===p.total||/发布前|保存|完成/.test(p.stage)||old.cancelRequested;
+      const diagnosticChanged=Array.isArray(p.premiumFinalFailures)&&p.premiumFinalFailures.length&&JSON.stringify(p.premiumFinalFailures)!==JSON.stringify(old.premiumFinalFailures);
+      const checkpoint=p.stage!==old.stage||p.done===p.total||/发布前|保存|完成/.test(p.stage)||old.cancelRequested||diagnosticChanged;
       if(checkpoint||Date.now()-lastStateWriteAt>=PROGRESS_WRITE_MS)ownedWrite({},old);else storageDiagnostics.coalescedProgress++;
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
     backup:async value=>{requireOwner();try{write(value,stateKey+'_backup');}catch(_){throw new Error('无法备份原列表，停止发布');}}

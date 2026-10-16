@@ -4,7 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const root=path.join(__dirname,'../../src/cf-autorank');
 const source=fs.readFileSync(path.join(root,'youtube-premium.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'pool-source.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\nconst CF_RANK_OFFICIAL='+fs.readFileSync(path.join(root,'official-pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
 async function run(argument,trigger='button',seedStore={},harness={}) {
- const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[],storageOps={reads:0,writes:0};let output,doneCount=0;
+ const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[],notifications=[],storageOps={reads:0,writes:0};let output,doneCount=0;
  const host='example.net',uuid='11111111-1111-4111-8111-111111111111';
  let list=Array.from({length:10},(_,i)=>`8.35.211.${i+1}:2053#Original-${String(i+1).padStart(2,'0')}`).join('\n');
  const config={HOST:host,HOSTS:[host],UUID:uuid,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};
@@ -48,9 +48,9 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
   $utils:{geoip:ip=>{assert.equal(ip,'8.8.4.4');return harness.noGeoIP?null:'US';}},
   $argument:argument,$trigger:trigger,$input:{purpose:'panel'},$network:harness.network||{v4:{primaryInterface:'pdp_ip0',primaryAddress:'192.0.2.10'}},
   $persistentStore:{read:k=>{storageOps.reads++;if(harness.storageCost)harness.clock.advance(harness.storageCost.read);return store[k]||null;},write:(v,k)=>{storageOps.writes++;if(harness.storageCost)harness.clock.advance(harness.storageCost.write);store[k]=v;states.push({key:k,value:JSON.parse(v)});if(harness.onWrite)harness.onWrite({key:k,value:JSON.parse(v),store,states});return true;}},
-  $notification:{post:()=>{}},$done:r=>{output=r;doneCount++;settle();},
+  $notification:{post:(title,subtitle,body,options)=>notifications.push({title,subtitle,body,options})},$done:r=>{output=r;doneCount++;settle();},
   $httpClient:{get:(o,c)=>client('GET',o,c),post:(o,c)=>client('POST',o,c),head:(o,c)=>client('HEAD',o,c)}};
- vm.runInNewContext(source,ctx);await completion;return {store,logs,requests,writes,output,doneCount,states,storageOps};
+ vm.runInNewContext(source,ctx);await completion;return {store,logs,requests,writes,output,doneCount,states,notifications,storageOps};
 }
 test('panel status never makes network requests',async()=>{const r=await run('status|example.net|lite|40|');assert.equal(r.requests.length,0);assert.equal(r.doneCount,1);});
 test('missing credentials cannot start measurements or publication',async()=>{const r=await run('start|example.net|lite|40|');assert.equal(r.requests.length,0);assert.match(r.output.content,/密码/);});
@@ -451,4 +451,84 @@ test('cancel received after saving starts remains recorded while subscription re
  const s=JSON.parse(r.store[key]);assert(cancelled);assert.equal(r.writes.length,1);assert(s.result.verified);
  assert.equal(s.cancelRequested,true);assert.equal(s.running,false);
  assert(r.requests.some(x=>x.url.includes('&surge')));
+});
+
+test('failed-run notification copies its complete saved summary while the visible body stays short',async()=>{
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,requests})=>{
+  if(options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor))return {error:'timeout'};
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']),n=r.notifications.at(-1);
+ assert.equal(s.stage,'未完成');assert.equal(n.options.action,'clipboard');
+ assert.match(n.options.text,/本轮总耗时：/);assert.match(n.options.text,/各阶段耗时：/);
+ assert.match(n.options.text,/停止阶段：发布前核对/);assert.match(n.options.text,/读取后台配置失败/);
+ assert.equal(n.body,s.message);assert(!n.body.includes('各阶段耗时'));assert(n.options.text.length>n.body.length);
+ assert(!r.output.content.includes('各阶段耗时'));assert.equal(r.writes.length,0);
+});
+test('final Premium timeout diagnostics survive failed recovery and are copied without raw private data',async()=>{
+ const key='CFEdgeRank_example.net';let target,finalCalls=0;
+ const privateURL='https://private.example/credential?token='+('f'.repeat(32));
+ const raw='timeout '+privateURL+' local-secret 11111111-1111-4111-8111-111111111111';
+ const html='<html>private-premium-response</html>';
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,store})=>{
+  if(!options.url.startsWith('https://www.youtube.com/premium?')||JSON.parse(store[key]).stage!=='出口与 Premium 最终复核')return;
+  if(!target)target=options['policy-descriptor'];
+  if(options['policy-descriptor']===target){finalCalls++;return {error:raw,data:html};}
+ }});
+ const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
+ assert.equal(r.writes.length,0);assert.equal(finalCalls,2);
+ assert.equal(s.premium.recoveryAttempts,1);assert.equal(s.premium.recovered,0);
+ assert.equal(s.premiumFinalFailures.length,2);assert.equal(s.premiumFinalFailures[0].reason,'network_timeout');
+ assert.equal(s.premiumFinalFailures[1].attempt,'recovery');
+ assert.match(n.options.text,/停止阶段：出口与 Premium 最终复核/);
+ assert.match(n.options.text,/Premium 恢复：尝试 1 个 · 恢复 0 个/);
+ assert.match(n.options.text,/Premium 最终检测：候选 \d+ · 发布前复核 \/ 首次 · 请求超时/);
+ assert.match(n.options.text,/第 3 检/);assert.match(n.options.text,/第 1 检/);
+ assert.match(n.options.text,/发布前复核 \/ 恢复复测 · 请求超时/);
+ assert.match(n.options.text,/恢复三检失败/);assert(!n.body.includes('Premium 最终检测：'));
+ const exposed=JSON.stringify([r.logs,r.store,r.notifications,r.output]);
+ for(const secret of [privateURL,html,'private-premium-response','local-secret','f'.repeat(32),'11111111-1111-4111-8111-111111111111'])assert(!exposed.includes(secret));
+ assert(!/https?:\/\//.test(n.options.text));
+});
+test('final HTTP rejection has a safe status diagnostic and never attempts transport recovery',async()=>{
+ const key='CFEdgeRank_example.net';let target,finalCalls=0;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options,store})=>{
+  if(!options.url.startsWith('https://www.youtube.com/premium?')||JSON.parse(store[key]).stage!=='出口与 Premium 最终复核')return;
+  if(!target)target=options['policy-descriptor'];
+  if(options['policy-descriptor']===target){finalCalls++;return {status:403,data:'<html>private-rejection-body</html>'};}
+ }});
+ const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
+ assert.equal(finalCalls,1);assert.equal(r.writes.length,0);assert.equal(s.premium.recoveryAttempts,0);
+ assert.equal(s.premiumFinalFailures[0].reason,'http');assert.equal(s.premiumFinalFailures[0].httpStatus,403);
+ assert.match(n.options.text,/HTTP 403/);assert(!JSON.stringify([r.store,r.notifications,r.logs]).includes('private-rejection-body'));
+});
+test('a recovered final transport failure remains visible in the successful clipboard summary',async()=>{
+ const key='CFEdgeRank_example.net';let target,finalCalls=0;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,store})=>{
+  if(!options.url.startsWith('https://www.youtube.com/premium?')||JSON.parse(store[key]).stage!=='出口与 Premium 最终复核')return;
+  if(!target)target=options['policy-descriptor'];
+  if(options['policy-descriptor']===target&&++finalCalls===1)return {error:'connection reset with private information'};
+ }});
+ const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
+ assert.equal(finalCalls,4);assert.equal(r.writes.length,1);assert(s.result.verified);
+ assert.equal(s.result.premium.recoveryAttempts,1);assert.equal(s.result.premium.recovered,1);
+ assert.equal(s.result.premiumFinalFailures[0].recovered,true);
+ assert.match(n.options.text,/Premium 恢复：尝试 1 个 · 恢复 1 个/);assert.match(n.options.text,/已恢复/);
+ assert(!JSON.stringify([r.store,r.logs,r.notifications]).includes('private information'));
+});
+test('older failure records remain readable without new diagnostic fields',async()=>{
+ const key='CFEdgeRank_example.net',now=Date.now();
+ const old={stage:'未完成',failureStage:'出口与 Premium 最终复核',startedAt:now-61000,updatedAt:now,running:false,bytes:100,
+  premium:{passed:10,verified:8,bytes:200,unavailable:0,unknown:0,inconsistent:0},message:'检测未通过'};
+ const r=await run('status|example.net|lite|40|','button',{[key]:JSON.stringify(old)});
+ assert.equal(r.requests.length,0);assert.equal(r.notifications.length,0);
+ const text=r.logs.join('\n');assert.match(text,/本轮总耗时：1分01秒/);assert.match(text,/停止阶段：出口与 Premium 最终复核/);
+ assert(!text.includes('undefined'));assert(!text.includes('NaN'));assert(!text.includes('Premium 恢复：'));
+});
+test('diagnostic formatter allowlists fields and never echoes unknown reason strings or endpoint data',async()=>{
+ const key='CFEdgeRank_example.net',privateData='https://private.example/local-secret';
+ const state={stage:'未完成',message:'检测未通过',premiumFinalFailures:[{candidate:1,phase:'final',attempt:'initial',reason:privateData,
+  httpStatus:privateData,networkError:privateData,regions:['US',privateData],oldestAgeMs:privateData,endpoint:privateData,headers:privateData,html:privateData}]};
+ const r=await run('status|example.net|lite|40|','button',{[key]:JSON.stringify(state)});
+ const text=JSON.stringify([r.logs,r.output]);assert.match(text,/原因未确认/);assert.match(text,/地区 US/);assert(!text.includes(privateData));
+ assert.equal(r.requests.length,0);
 });

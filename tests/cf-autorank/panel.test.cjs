@@ -76,3 +76,11 @@ test('two-pass and pipelined stages retain compact progress without counting inc
  assert.equal(verify,'出口与 Premium 复核 3/10\nPremium 复核 3/10 · 正文 26 MB');
  for(const text of [pre,first,final,reserve,verify])assert.equal(text.split('\n').length,2);
 });
+test('bounded Premium recovery stays in the existing progress card without claiming publication',()=>{
+ const state={running:true,stage:'出口与 Premium 最终复核',updatedAt:now,done:3,total:10,bytes:100000000,
+  premium:{verified:3,bytes:12000000,recoveryAttempts:2,recovered:1}};
+ const card=U.view('status',state,now,'lite');
+ assert.equal(card.content,'出口与 Premium 复核 3/10\nPremium 复核 3/10 · 恢复 1/2 · 正文 112 MB');
+ assert.equal(card.content.split('\n').length,2);assert(!card.content.includes('已核对'));
+ assert(!U.view('main',{...state,lastSuccess:history},now,'lite').content.includes('恢复'));
+});
