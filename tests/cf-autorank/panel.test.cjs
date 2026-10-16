@@ -16,7 +16,7 @@ test('old successful records never invent the Wi-Fi name',()=>{
 test('Premium progress and verified history use two lines without retroactively upgrading old results',()=>{
  const state={running:true,stage:'YouTube Premium 检测',done:12,total:24,bytes:100000000,startedAt:now-50000,updatedAt:now,
   premium:{tested:12,passed:8,verified:0,bytes:12000000}};
- let v=U.view('status',state,now,'lite');assert.equal(v.content,'Premium 筛选 12/24\n通过 8/10 · 正文 112 MB');
+ let v=U.view('status',state,now,'lite');assert.equal(v.content,'Premium 预检 12/24\n通过 8/10 · 正文 112 MB');
  v=U.view('status',{...state,stage:'YouTube Premium 发布前复核',done:4,total:10,premium:{...state.premium,verified:4}},now);
  assert.match(v.content,/复核 4\/10/);assert.equal(v.content.split('\n').length,2);
  v=U.view('main',{lastSuccess:{...history,premiumVerified:10,premiumBytes:30000000}},now);
@@ -54,4 +54,10 @@ test('reserve and evidence-refresh stages persist selection counts in the existi
   const card=U.view('status',s,now,'lite');
   assert.equal(card.content,label+' 2/16\n已选 7/10 · 正文 150 MB');
  }
+});
+test('optimized stages show concurrency or preflight counts without adding a panel',()=>{
+ const s={running:true,updatedAt:now,startedAt:now-30000,bytes:21000000,premium:{eligible:15,passed:0,bytes:5000000}};
+ assert.equal(U.view('status',{...s,stage:'YouTube Premium 检测',done:20,total:24},now).content,'Premium 预检 20/24\n待复测 15 个 · 正文 26 MB');
+ assert.match(U.view('status',{...s,stage:'低流量连通与延迟初筛',done:128,total:1280,lightConcurrency:16},now).content,/并发 16/);
+ assert.match(U.view('status',{...s,stage:'轻量初筛降载复核',done:12,total:64,lightConcurrency:8},now).content,/降载复核 12\/64\n并发 8/);
 });

@@ -38,3 +38,18 @@ test('fewer passing entries proceed without padding and failed current entries h
  const selected=C.pickDownloads(rows,[rows[0]],320,random(42));
  assert.equal(selected.length,22);assert(!selected.some(e=>e.key===rows[0].key));
 });
+test('adaptive screening rechecks a degraded batch at eight before admitting its rows',async()=>{
+ const entries=Array.from({length:320},(_,i)=>entry(i)),calls=new Map(),reports=[];
+ let active=0,peak=0;
+ const r=await C.adaptiveLightScreen(entries,C.LIGHT_SCREEN.lite,async e=>{
+  const n=(calls.get(e.key)||0)+1;calls.set(e.key,n);
+  // Use actual active workers below rather than wall-clock timers.
+  active++;peak=Math.max(peak,active);const overloaded=active>8;
+  await new Promise(resolve=>setImmediate(resolve));active--;
+  return overloaded?[{status:0,error:'timeout',ms:4000}]:[{status:204,ms:100},{status:204,ms:100}];
+ },async p=>{reports.push({...p,stats:undefined});});
+ assert(r.stats.backoffs>0);assert(r.stats.rechecked>0);assert.equal(r.rows.length,entries.length);
+ assert(r.rows.every(e=>e.lightSamples.every(C.lightValid)));
+ assert(peak<=16);assert(reports.some(p=>p.rechecking&&p.concurrency===8));
+ assert([...calls.values()].some(n=>n===2));assert.equal(new Set(r.rows.map(e=>e.key)).size,entries.length);
+});

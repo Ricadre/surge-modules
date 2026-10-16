@@ -6,7 +6,7 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
-| Cloudflare 一键优选 | 0.1.15 · 1280 个轻量初筛 → 最多 160 个下载 → Premium 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
+| Cloudflare 一键优选 | 0.1.16 · 1280 个轻量初筛 → 最多 160 个下载 → Premium 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
@@ -20,7 +20,7 @@
 
 后台上游为 **[cmliu/edgetunnel](https://github.com/cmliu/edgetunnel)**，提供 Cloudflare 隧道、管理面板与订阅；本仓库实现 Surge 端的测速、排名、出口国旗和自动回写。具体分工见[上游项目说明](docs/cf-autorank.md#上游项目与本模块的关系)。
 
-手动刷新主面板：**更新池与备份 → 1280 个轻量初筛 → 最多 160 个下载初筛 → 前 24 个双次复测 → Premium 双检，不足时按需补选后备 → 凑齐 10 个后出口检测 → Premium 发布前复核 → 保存并验证订阅**。后备先过 Premium 双检才做下载复测，额外复测最多 24 个，凑齐即停；最终不足 10 个或复核失败时保留原订阅；检测不验证会员账号资格。后台连接先直连，失败时按现有 Surge 规则重试；测速始终指定被测 CF 入口。成功后手动刷新原 CF 订阅。进度面板及自动刷新只读状态，不启动测速。完整顺序与请求路径见[操作流程](docs/cf-autorank.md#点击面板刷新后会发生什么)。
+手动刷新主面板：**更新池与备份 → 1280 个轻量初筛 → 最多 160 个下载初筛 → 前 24 个先 Premium 双检 → 稳定性检查 → 独占双次下载复测，不足时按需补选后备 → 凑齐 10 个后出口检测 → Premium 发布前复核 → 保存并验证订阅**。轻量初筛自适应 8～16 并发；Premium、稳定性和出口检查最多 4 并发，下载复测不与其他探测同时运行。后备先过 Premium 双检才做下载复测，额外复测最多 24 个，凑齐即停；最终不足 10 个或复核失败时保留原订阅；检测不验证会员账号资格。后台连接先直连，失败时按现有 Surge 规则重试；测速始终指定被测 CF 入口。成功后手动刷新原 CF 订阅。进度面板及自动刷新只读状态，不启动测速。完整顺序与请求路径见[操作流程](docs/cf-autorank.md#点击面板刷新后会发生什么)。
 
 以后统一使用[固定模块地址](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule)。从旧版本地址迁移一次后，在 Surge 中更新同一个模块即可，后台参数保存在本机。带版本号的文件仅用于复现和回退；内部 JS 引用随模块更新。
 

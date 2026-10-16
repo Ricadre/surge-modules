@@ -1,48 +1,7 @@
 const convertedName=require('./subconverter-fixture.cjs');
 const premiumPage=require('./premium-fixture.cjs');
 const test=require('node:test');const assert=require('node:assert/strict');const C=require('../../src/cf-autorank/core.js');const pools=require('../../src/cf-autorank/pools.json');
-const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
-function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
-function fixture(options={}) {
- let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`【🇺🇸】 CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
- if(options.outsideCurrent)list=list.replace('8.35.211.1:2053','9.9.9.9:443');
- const allowedPools=C.includeCurrent(list,pools.concat(options.official||[]));
- const original=list,posts=[],calls=[],progress=[],geoCalls=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
- const cfg=config();
- const env={
-  now:()=>time,id:()=>String(++id),random:()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296;},
-  networkKey:()=>options.networkChange&&probes>8?'new':'old',
-  geoip:ip=>{geoCalls.push(ip);return options.geoipUnknown?'':'US';},
-  cancelled:async()=>options.cancel&&probes>8,
-  sleep:async ms=>{time+=ms;},
-  progress:async p=>progress.push(structuredClone(p)),backup:async b=>{assert.equal(b.list,original);},
-  login:async()=>{if(options.loginFail)throw new Error('登录失败');},
-  control:async(method,path,body)=>{
-   calls.push([method,path]);
-   if(method==='POST'){assert.equal(path,'/admin/ADD.txt');assert.equal(C.parseList(body,allowedPools).length,10);posts.push(body);list=body;return {success:true};}
-   if(path==='/admin/config.json'){snapshots++;if(options.userChange&&snapshots===2)list=original.replace('8.35.211.1:','8.35.211.250:');if(options.wrongMode)cfg.优选订阅生成.local=false;return structuredClone(cfg);}
-   if(path==='/admin/ADD.txt')return list;
-   const entries=C.parseList(list,allowedPools);
-   if(path.endsWith('&b64'))return Buffer.from(entries.map(e=>`trojan://${PASS}@${e.key}?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${encodeURIComponent(options.rawNameFail&&posts.length===1?'Old name':e.name)}`).join('\n')).toString('base64');
-   if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`${options.surgeNameFail&&posts.length===1?'Old name':convertedName(e.name)} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
-   throw new Error('Unknown path');
-  },
-  probe:async spec=>{
-   probes++;time+=10;
-   if(options.expired&&probes>8)time+=3600000;
-   assert.match(spec.descriptor,/^CF-Probe-.* = trojan, /);assert.match(spec.descriptor,/skip-cert-verify=false/);
-   if(options.allFail)return {error:'timeout',status:0,bytes:0,ms:4000,headers:{}};
-   if(spec.url.startsWith('https://www.youtube.com/premium?'))return {status:200,data:premiumPage(),ms:100};
-   if(spec.url.startsWith('https://api.ipify.org?')){assert.equal(spec.headers.Range,undefined);return {status:200,data:JSON.stringify({ip:'8.8.4.4'}),ms:100,error:null};}
-   if(spec.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(spec.headers.Range);const size=Number(m[2])-Number(m[1])+1;
-    if(options.ignoredRange)return {status:200,bytes:size,ms:100,headers:{}};
-    return {status:206,bytes:size,ms:100+(probes%13)*10,headers:{'Content-Range':`bytes ${m[1]}-${m[2]}/200000000`}};
-   }
-   return {status:204,ms:250,error:null,headers:{}};
-  }
- };
- return {env,opts:{host:HOST,password:'local-only',limit:40,mode:'lite'},posts,calls,original,progress,geoCalls,getList:()=>list};
-}
+const {fixture,config,HOST,PASS}=require('./core-fixture.cjs');
 test('settings preserves separators in password and validates host',()=>{
  assert.equal(C.settings('start|example.net|lite|320|a|b&c').password,'a|b&c');
  assert.equal(C.settings('start|example.net|lite|320|b64:'+Buffer.from('汉字"x').toString('base64')).password,'汉字"x');
@@ -87,7 +46,7 @@ test('Premium filtering skips faster unavailable nodes and ranks passing nodes b
   return probe(spec);
  };
  const r=await C.execute(f.env,f.opts,pools);
- assert(r.verified);assert.equal(r.premium.unavailable,3);assert.equal(r.premium.tested,13);assert.equal(r.premium.verified,10);
+ assert(r.verified);assert.equal(r.premium.unavailable,3);assert.equal(r.premium.tested,24);assert.equal(r.premium.verified,10);
  assert(r.selected.every(e=>!seen.slice(0,3).some(d=>d.startsWith('CF-Probe-'+e.ip+'-'))));
  assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
  assert(r.selected.every(e=>e.premium.samples.length===3));assert.equal(f.posts.length,1);
@@ -139,8 +98,8 @@ test('seven initial qualifiers are filled from reserves then sorted by full rete
   const f=reserveFixture({mode}),r=await C.execute(f.env,f.opts,pools);
   assert(r.verified);assert.equal(f.posts.length,1);assert.equal(f.seen.length,27);
   assert.equal(r.supplement.examined,3);assert.equal(r.supplement.refined,3);assert.equal(r.supplement.added,3);
-  assert.equal(f.downloads.length,54);assert(f.downloads.every(d=>d.size===C.MODES[mode].sampleBytes));
-  assert.equal(r.bytes,40*C.MODES[mode].screenBytes+54*C.MODES[mode].sampleBytes);
+  assert.equal(f.downloads.length,20);assert(f.downloads.every(d=>d.size===C.MODES[mode].sampleBytes));
+  assert.equal(r.bytes,40*C.MODES[mode].screenBytes+20*C.MODES[mode].sampleBytes);
   assert(r.premium.bytes>0);assert.equal(r.premium.verified,10);assert.equal(r.premium.refreshed,0);
   assert.equal(new Set(r.selected.map(e=>e.ip)).size,10);
   assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
@@ -162,7 +121,7 @@ test('reserve Premium failures cost no full downloads and failed full retests ca
 test('reserve retesting stops at 24 extra candidates instead of consuming unbounded downloads',async()=>{
  const f=reserveFixture({limit:160,rejectReserveDownloads:true});
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 7\/10，补选复测达到上限/);
- assert.equal(f.seen.length,48);assert.equal(f.downloads.length,96);
+ assert.equal(f.seen.length,48);assert.equal(f.downloads.length,62);
  const s=f.progress.at(-1).supplement;assert.equal(s.refined,24);assert.equal(s.added,0);assert(s.limited);
  assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
 });
@@ -184,9 +143,9 @@ test('network changes or cancellation during reserve probes stop further work an
   const f=reserveFixture(),probe=f.env.probe;let stopped=false;
   f.env.networkKey=()=>kind==='network'&&stopped?'new':'old';
   f.env.cancelled=async()=>kind==='cancel'&&stopped;
-  f.env.probe=async spec=>{const r=await probe(spec);if(f.seen.length===25)stopped=true;return r;};
+  f.env.probe=async spec=>{const r=await probe(spec);if(f.seen.length>=25)stopped=true;return r;};
   await assert.rejects(()=>C.execute(f.env,f.opts,pools),/网络变化|取消/);
-  assert.equal(f.downloads.length,48);assert.equal(f.posts.length,0);
+  assert.equal(f.downloads.length,14);assert.equal(f.posts.length,0);
  }
 });
 test('unknown, Lite-only and changing Premium regions fail closed',async()=>{
@@ -242,7 +201,7 @@ test('default lite screens 1280 with small HEAD requests then limits bandwidth d
  };
  const r=await C.execute(f.env,f.opts,pools);
  assert(r.verified);assert.equal(r.candidateCount,1280);assert.equal(r.lightRequests,2560);
- assert.equal(light.length,2560);assert.equal(new Set(light.map(x=>x.url)).size,2560);assert(maxActive<=8&&maxActive>1);
+ assert.equal(light.length,2560);assert.equal(new Set(light.map(x=>x.url)).size,2560);assert.equal(maxActive,16);
  assert.equal(r.downloadCandidateCount,160);assert.deepEqual(r.downloadReasons,{current:10,latency:120,exploration:30});
  const sizes=downloads.map(s=>{const m=/bytes=(\d+)-(\d+)/.exec(s.headers.Range);return Number(m[2])-Number(m[1])+1;});
  assert.equal(sizes.filter(n=>n===131072).length,160);assert.equal(sizes.filter(n=>n===2000000).length,48);
@@ -274,7 +233,7 @@ test('flaky second light responses cannot enter the download shortlist',async()=
  f.env.probe=async spec=>{
   if(spec.url.includes('cf_rank_light=')) {
    const n=(attempts.get(spec.descriptor)||0)+1;attempts.set(spec.descriptor,n);
-   if(n===2&&attempts.size%3===0){failed.add(spec.descriptor);return {status:204,ms:100,error:'timeout'};}
+   if(failed.has(spec.descriptor)||n===2&&attempts.size%3===0){failed.add(spec.descriptor);return {status:204,ms:100,error:'timeout'};}
   }
   if(spec.headers.Range)downloaded.add(spec.descriptor);
   return probe(spec);

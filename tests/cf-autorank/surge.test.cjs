@@ -66,7 +66,7 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(verified.result.premium.verified,10);assert.equal(verified.lastSuccess.premiumVerified,10);
  assert(verified.result.selected.every(e=>e.premium.samples.length===3));
  const premiumRequests=r.requests.filter(x=>x.url.startsWith('https://www.youtube.com/premium?'));
- assert.equal(premiumRequests.length,30);assert(premiumRequests.every(x=>x.descriptor&&!x.policy));
+ assert.equal(premiumRequests.length,58);assert(premiumRequests.every(x=>x.descriptor&&!x.policy));
  assert.match(r.output.content,/YT✓/);
  assert(verified.result.selected.every(e=>e.name.startsWith('【🇺🇸】 CF')));
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
@@ -345,7 +345,7 @@ test('transport failure during final backend read switches route without restart
  }});
  assert(failed);assert.equal(r.writes.length,1);assert(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified);
  assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,2560);
- assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,30);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,58);
  assert(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).every(x=>x.policy===undefined));
 });
 test('HTTP rejection or bad credentials never switch routes to bypass a backend response',async()=>{
