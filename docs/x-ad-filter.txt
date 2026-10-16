@@ -10,3 +10,5 @@ Surge 重写依赖能解密目标 HTTPS 请求；采用证书锁定的 App 可�
 
 公开资料与实现来源
 https://manual.nssurge.com/http/mitm.html
+https://github.com/5jwoj/Surge/tree/main/X
+https://github.com/NeoFreeBird/app/blob/e137331dad77064c9fe819bc5cce233756c3ea3c/src/Hooks/Ads.x
