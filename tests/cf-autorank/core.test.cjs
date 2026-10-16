@@ -1,4 +1,5 @@
 const convertedName=require('./subconverter-fixture.cjs');
+const premiumPage=require('./premium-fixture.cjs');
 const test=require('node:test');const assert=require('node:assert/strict');const C=require('../../src/cf-autorank/core.js');const pools=require('../../src/cf-autorank/pools.json');
 const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
 function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
@@ -31,6 +32,7 @@ function fixture(options={}) {
    if(options.expired&&probes>8)time+=3600000;
    assert.match(spec.descriptor,/^CF-Probe-.* = trojan, /);assert.match(spec.descriptor,/skip-cert-verify=false/);
    if(options.allFail)return {error:'timeout',status:0,bytes:0,ms:4000,headers:{}};
+   if(spec.url.startsWith('https://www.youtube.com/premium?'))return {status:200,data:premiumPage(),ms:100};
    if(spec.url.startsWith('https://api.ipify.org?')){assert.equal(spec.headers.Range,undefined);return {status:200,data:JSON.stringify({ip:'8.8.4.4'}),ms:100,error:null};}
    if(spec.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(spec.headers.Range);const size=Number(m[2])-Number(m[1])+1;
     if(options.ignoredRange)return {status:200,bytes:size,ms:100,headers:{}};
@@ -71,6 +73,72 @@ test('successful end-to-end mock publishes only ADD.txt and verifies both subscr
  assert(r.changed&&r.verified);assert.equal(r.selected.length,10);assert.equal(new Set(r.selected.map(x=>x.ip)).size,10);assert.equal(f.posts.length,1);
  assert.equal(r.candidateCount,1280);assert.equal(r.downloadCandidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
  assert(r.selected.every(x=>x.samples.length===2));
+ assert.equal(r.premium.verified,10);assert(r.selected.every(x=>x.premium.status==='available'&&x.premium.samples.length===3));
+});
+test('Premium filtering skips faster unavailable nodes and ranks passing nodes by conservative speed',async()=>{
+ const f=fixture(),probe=f.env.probe,seen=[];
+ f.env.probe=async spec=>{
+  if(spec.url.startsWith('https://www.youtube.com/premium?')) {
+   if(!seen.includes(spec.descriptor))seen.push(spec.descriptor);
+   if(seen.indexOf(spec.descriptor)<3)return {status:200,data:premiumPage({unavailable:true})};
+  }
+  return probe(spec);
+ };
+ const r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.premium.unavailable,3);assert.equal(r.premium.tested,13);assert.equal(r.premium.verified,10);
+ assert(r.selected.every(e=>!seen.slice(0,3).some(d=>d.startsWith('CF-Probe-'+e.ip+'-'))));
+ assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
+ assert(r.selected.every(e=>e.premium.samples.length===3));assert.equal(f.posts.length,1);
+});
+test('only nine Premium-capable nodes never publish or fill with unqualified entries',async()=>{
+ const f=fixture(),probe=f.env.probe,seen=[];
+ f.env.probe=async spec=>{
+  if(spec.url.startsWith('https://www.youtube.com/premium?')) {
+   if(!seen.includes(spec.descriptor))seen.push(spec.descriptor);
+   if(seen.indexOf(spec.descriptor)>=9)return {status:200,data:premiumPage({unavailable:true})};
+  }
+  return probe(spec);
+ };
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 9\/10/);
+ assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);assert.equal(seen.length,24);
+});
+test('unknown, Lite-only and changing Premium regions fail closed',async()=>{
+ for(const kind of ['timeout','lite','region-change']) {
+  const f=fixture(),probe=f.env.probe,counts=new Map();
+  f.env.probe=async spec=>{
+   if(!spec.url.startsWith('https://www.youtube.com/premium?'))return probe(spec);
+   const n=(counts.get(spec.descriptor)||0)+1;counts.set(spec.descriptor,n);
+   if(kind==='timeout')return {status:200,error:'timeout',data:premiumPage()};
+   return {status:200,data:premiumPage({lite:kind==='lite',region:n===1?'US':'JP'})};
+  };
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 0\/10/);
+  assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+ }
+});
+test('Premium lost during final recheck or expired while reading backend prevents writes',async()=>{
+ for(const kind of ['final-failure','expired']) {
+  const f=fixture(),probe=f.env.probe,progress=f.env.progress,now=f.env.now,counts=new Map();let elapsed=0;
+  f.env.now=()=>now()+elapsed;
+  f.env.progress=async p=>{await progress(p);if(kind==='expired'&&p.stage==='发布前核对')elapsed=11*60*1000;};
+  f.env.probe=async spec=>{
+   if(spec.url.startsWith('https://www.youtube.com/premium?')) {
+    const n=(counts.get(spec.descriptor)||0)+1;counts.set(spec.descriptor,n);
+    if(kind==='final-failure'&&n===3)return {status:200,data:premiumPage({unavailable:true})};
+   }
+   return probe(spec);
+  };
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium .*未通过|Premium .*过期/);
+  assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+ }
+});
+test('network changes or cancellation during Premium probing discard the run',async()=>{
+ for(const kind of ['network','cancel']) {
+  const f=fixture(),probe=f.env.probe;let switched=false;
+  f.env.networkKey=()=>kind==='network'&&switched?'changed':'original';
+  f.env.cancelled=async()=>kind==='cancel'&&switched;
+  f.env.probe=async spec=>{const result=await probe(spec);if(spec.url.startsWith('https://www.youtube.com/premium?'))switched=true;return result;};
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/网络变化|取消/);assert.equal(f.posts.length,0);
+ }
 });
 test('default lite screens 1280 with small HEAD requests then limits bandwidth downloads to 160',async()=>{
  const f=fixture(),original=f.env.probe,light=[],downloads=[];let active=0,maxActive=0;

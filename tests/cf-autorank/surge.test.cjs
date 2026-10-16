@@ -1,7 +1,8 @@
 const convertedName=require('./subconverter-fixture.cjs');
+const premiumPage=require('./premium-fixture.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const root=path.join(__dirname,'../../src/cf-autorank');
-const source=fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'pool-source.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\nconst CF_RANK_OFFICIAL='+fs.readFileSync(path.join(root,'official-pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
+const source=fs.readFileSync(path.join(root,'youtube-premium.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'pool-source.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\nconst CF_RANK_OFFICIAL='+fs.readFileSync(path.join(root,'official-pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
 async function run(argument,trigger='button',seedStore={},harness={}) {
  const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[];let output,doneCount=0;
  const host='example.net',uuid='11111111-1111-4111-8111-111111111111';
@@ -30,6 +31,7 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
    assert.match(options['policy-descriptor'],/^CF-Probe-.* = trojan,/);assert.equal(options.policy,undefined);assert.equal(options['auto-cookie'],false);
    if(options.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(options.headers.Range);status=206;data={byteLength:Number(m[2])-Number(m[1])+1};headers={'Content-Range':`bytes ${m[1]}-${m[2]}/200000000`};}
    else if(options.url.startsWith('https://api.ipify.org?')){status=200;data=JSON.stringify({ip:'8.8.4.4'});}
+   else if(options.url.startsWith('https://www.youtube.com/premium?')){status=200;data=premiumPage(harness.premiumUnavailable?{unavailable:true}:{});assert.equal(options['auto-redirect'],false);assert.equal(options.headers.Cookie,undefined);}
    else if(options.url==='https://ipwho.is/8.8.4.4?fields=ip,success,country_code'){status=200;data=JSON.stringify({ip:'8.8.4.4',success:true,country_code:'JP'});}
    else status=204;
   }
@@ -56,6 +58,11 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.match(r.output.content,/上次更新 .*10 节点/);assert.equal(r.output.content.split('\n').length,2);
  assert(!/\d+\.\d+\.\d+\.\d+/.test(r.output.content));assert(r.logs.some(line=>line.includes('Mbps')));
  const verified=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(verified.result.verified,true);
+ assert.equal(verified.result.premium.verified,10);assert.equal(verified.lastSuccess.premiumVerified,10);
+ assert(verified.result.selected.every(e=>e.premium.samples.length===3));
+ const premiumRequests=r.requests.filter(x=>x.url.startsWith('https://www.youtube.com/premium?'));
+ assert.equal(premiumRequests.length,30);assert(premiumRequests.every(x=>x.descriptor&&!x.policy));
+ assert.match(r.output.content,/YT✓/);
  assert(verified.result.selected.every(e=>e.name.startsWith('【🇺🇸】 CF')));
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
  assert.equal(verified.poolInfo.source,'live-text');
@@ -65,6 +72,13 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(verified.result.candidateCount,1280);assert.equal(verified.result.downloadCandidateCount,40);
  const light=r.requests.filter(x=>x.url.includes('cf_rank_light='));assert.equal(light.length,2560);
  assert(light.every(x=>x.method==='HEAD'&&x.descriptor&&!x.policy));
+});
+test('Premium failure never updates backend and preserves the previous successful record',async()=>{
+ const key='CFEdgeRank_example.net',lastSuccess={at:Date.now()-3600000,network:{kind:'cellular'},count:10,bytes:1000,changed:true,mode:'lite'};
+ const r=await run('start|example.net|lite|40|local-secret','button',{[key]:JSON.stringify({lastSuccess})},{premiumUnavailable:true});
+ assert.equal(r.writes.length,0);const saved=JSON.parse(r.store[key]);assert.equal(saved.running,false);assert.equal(saved.stage,'未完成');
+ assert.deepEqual(saved.lastSuccess,lastSuccess);assert.equal(saved.premium.passed,0);assert.equal(saved.premium.unavailable,24);
+ assert.match(r.output.content,/Premium 合格 0\/10/);assert(!r.output.content.includes('YT✓'));
 });
 test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
  const sharedStore={};

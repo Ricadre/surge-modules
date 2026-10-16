@@ -34,7 +34,7 @@ function lastSuccess(s) {
   if(s.result&&s.result.selected&&(s.result.verified||s.stage==='完成')) {
     const r=s.result;
     return {at:r.publishedAt||r.finishedAt||s.updatedAt,network:s.network||null,mode:s.mode||r.mode,
-      count:r.selected.length,bytes:s.bytes||r.bytes||0,changed:!!r.changed,
+      count:r.selected.length,bytes:s.bytes||r.bytes||0,premiumBytes:r.premium&&r.premium.bytes||0,premiumVerified:r.premium&&r.premium.verified||0,changed:!!r.changed,
       elapsedMs:(r.finishedAt||s.updatedAt)-(r.startedAt||s.startedAt||s.updatedAt)};
   }
   return null;
@@ -42,24 +42,27 @@ function lastSuccess(s) {
 function mainContent(s,mode) {
   const last=lastSuccess(s);
   if(!last)return '尚无成功记录 · '+(mode==='full'?'完整档':'省流档')+'\n点击开始；进度见下方';
-  return (last.changed?'上次更新 ':'上次核对 ')+dateText(last.at)+' · '+last.count+' 节点\n'
-    +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
+  return (last.changed?'上次更新 ':'上次核对 ')+dateText(last.at)+' · '+last.count+' 节点'+(last.premiumVerified===10?' · YT✓':'')+'\n'
+    +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.11 已加载 · 尚未开始\n点击上方面板运行完整优选';
-  const traffic=Math.round((s.bytes||0)/1000000)+' MB';
+  if(!s.stage)return 'v0.1.12 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  const premium=s.premium||s.result&&s.result.premium;
+  const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
-    const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
+    const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','YouTube Premium 检测':'Premium 筛选','YouTube Premium 发布前复核':'Premium 复核','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
     const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
     if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
+    if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'
+      +(s.stage==='YouTube Premium 检测'?'通过 '+(premium&&premium.passed||0):'复核 '+(premium&&premium.verified||0))+'/10 · 正文 '+traffic;
     const percent=s.total?' · '+Math.min(100,Math.floor((s.done||0)/s.total*100))+'%':'';
-    return stage+percent+poolNote+'\n'+duration(now-(s.startedAt||now))+' · 下载 '+traffic+' · '+duration(age)+'前进展';
+    return stage+percent+poolNote+'\n'+duration(now-(s.startedAt||now))+' · 正文 '+traffic+' · '+duration(age)+'前进展';
   }
   if(s.stage==='名称已核对')return '10 个名称已核对 · 国旗 '+(s.nameResult?s.nameResult.selected.filter(e=>e.egress&&e.egress.country).length:0)+'/10\n未运行下载测速 · 请刷新订阅';
-  if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对'+poolNote+'\n'
+  if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对'+(premium&&premium.verified===10?' · Premium 10/10':'')+poolNote+'\n'
     +duration((s.updatedAt||now)-(s.startedAt||s.result&&s.result.startedAt||s.updatedAt||now))+' · '+traffic+' · 请刷新订阅';
   return s.stage+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');
 }

@@ -11,6 +11,16 @@ test('main card uses saved successful network and Beijing time in two lines',()=
 test('old successful records never invent the Wi-Fi name',()=>{
   const v=U.view('main',{stage:'完成',updatedAt:now,result:{changed:true,selected:Array(10).fill({})}},now,'lite');
   assert.match(v.content,/网络未记录/);assert.match(v.content,/10 节点/);
+  assert(!v.content.includes('YT✓'));
+});
+test('Premium progress and verified history use two lines without retroactively upgrading old results',()=>{
+ const state={running:true,stage:'YouTube Premium 检测',done:12,total:24,bytes:100000000,startedAt:now-50000,updatedAt:now,
+  premium:{tested:12,passed:8,verified:0,bytes:12000000}};
+ let v=U.view('status',state,now,'lite');assert.equal(v.content,'Premium 筛选 12/24\n通过 8/10 · 正文 112 MB');
+ v=U.view('status',{...state,stage:'YouTube Premium 发布前复核',done:4,total:10,premium:{...state.premium,verified:4}},now);
+ assert.match(v.content,/复核 4\/10/);assert.equal(v.content.split('\n').length,2);
+ v=U.view('main',{lastSuccess:{...history,premiumVerified:10,premiumBytes:30000000}},now);
+ assert.match(v.content,/YT✓/);assert.match(v.content,/153 MB/);assert.equal(v.content.split('\n').length,2);
 });
 test('network metadata distinguishes cellular and unavailable Wi-Fi names',()=>{
   assert.equal(U.networkText(U.networkInfo({v4:{primaryInterface:'pdp_ip0'},wifi:{}})),'蜂窝网络');
@@ -20,7 +30,7 @@ test('network metadata distinguishes cellular and unavailable Wi-Fi names',()=>{
 test('progress percentage is per stage and shows elapsed data and activity age',()=>{
   const s={running:true,stage:'下载初筛',done:80,total:320,bytes:16000000,startedAt:now-92000,updatedAt:now-2000};
   const v=U.view('status',s,now,'lite');
-  assert.equal(v.content,'下载初筛 80/320 · 25%\n1分32秒 · 下载 16 MB · 2秒前进展');
+  assert.equal(v.content,'下载初筛 80/320 · 25%\n1分32秒 · 正文 16 MB · 2秒前进展');
 });
 test('stale state is uncertain rather than falsely running or complete',()=>{
   const s={running:true,stage:'双次复测',done:7,total:24,updatedAt:now-95000};

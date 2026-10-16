@@ -1,5 +1,6 @@
 (function (root) {
 'use strict';
+const premium=typeof module==='object'&&module.exports?require('./youtube-premium.js'):root.CFYouTubePremium;
 const MODES = {
   lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24 },
   full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24 }
@@ -286,17 +287,42 @@ async function execute(env,opts,pools,poolInfo=null) {
     }
     await update('稳定性与双次下载复测',++done,finalists.length);
   }
-  const selected=[];
-  for(const e of topDistinct(ranking,ranking.length)) { const check=await connect(e,'youtube');if(check.valid)selected.push(e);if(selected.length===10)break; }
-  assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,'稳定有效候选不足 10 个，保留原订阅');
+  const selected=[],premiumCandidates=topDistinct(ranking,ranking.length);
+  progress.premium={tested:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,bytes:0};
+  async function premiumProbe(e) {
+    const result=await premium.probe(env,descriptor(e,baseline.cfg),guard);
+    progress.premium.bytes+=result.bytes;
+    return result;
+  }
+  await update('YouTube Premium 检测',0,premiumCandidates.length);
+  for(const e of premiumCandidates) {
+    const samples=[await premiumProbe(e)];
+    if(samples[0].status==='available')samples.push(await premiumProbe(e));
+    const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region;
+    const status=available?'available':samples.some(s=>s.status==='unavailable')?'unavailable':samples.every(s=>s.status==='available')?'inconsistent':'unknown';
+    if(available)selected.push({...e,premium:{status,region:samples[0].region,samples}});
+    else progress.premium[status]++;
+    progress.premium.tested++;progress.premium.passed=selected.length;
+    await update('YouTube Premium 检测',progress.premium.tested,premiumCandidates.length);
+    if(selected.length===10)break;
+  }
+  assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
+    'Premium 合格 '+selected.length+'/10，不足 10 个，保留原订阅');
   const expectedNames=await exitNames(env,selected,baseline.cfg,guard,update);
+  await update('YouTube Premium 发布前复核',0,10);
+  for(const e of expectedNames) {
+    e.premium.samples.push(await premiumProbe(e));
+    assert(premium.qualified(e.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
+    progress.premium.verified++;await update('YouTube Premium 发布前复核',progress.premium.verified,10);
+  }
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
   assert(fresh.cfg.fingerprint===baseline.cfg.fingerprint&&fresh.list===baseline.list,'测速期间后台被改动，已保留当前设置');
   assert(sameEntries(await raw(fresh.cfg),baseline.entries),'测速期间实际订阅已改变，跳过发布');
   await guard();
-  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,selected:expectedNames.map(({ip,port,key,name,egress,score,latency,samples})=>({ip,port,key,name,egress,score,latency,samples})),changed:false,verified:false};
+  assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
+  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.poolInfo=poolInfo;
   outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
   outcome.lightRequests=progress.lightRequests;
@@ -311,6 +337,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   if(baseline.list.trim()===proposed) { outcome.verified=await verify(fresh.cfg,expectedNames);assert(outcome.verified,'列表未变，但订阅转换未核对通过');return outcome; }
   try {
     publishing=true;await update('保存与订阅验证',0,1);
+    await guard();assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
     const response=await req('POST','/admin/ADD.txt',proposed);
     assert(response&&response.success===true,'后台未确认保存成功');
     outcome.changed=true;

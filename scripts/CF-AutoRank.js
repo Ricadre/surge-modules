@@ -1,6 +1,85 @@
-// CF AutoRank v0.1.11. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.12. Credentials are entered by the user; never bundle secrets.
+(function(root) {
+'use strict';
+const MAX_HTML=2500000;
+const MAX_AGE=10*60*1000;
+const UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+// Parse the public landing page as data only. Never execute downloaded JavaScript.
+function initialData(html) {
+  const marker=/(?:\b(?:var|let|const)\s+)?\bytInitialData\s*=\s*|window\s*\[\s*["']ytInitialData["']\s*\]\s*=\s*/g;
+  const match=marker.exec(html);if(!match)return null;
+  const start=marker.lastIndex;if(html[start]!=='{')return null;
+  let depth=0,quoted=false,escaped=false;
+  for(let i=start;i<html.length;i++) {
+    const c=html[i];
+    if(quoted){if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')quoted=false;continue;}
+    if(c==='"')quoted=true;
+    else if(c==='{')depth++;
+    else if(c==='}'&&--depth===0){try{return JSON.parse(html.slice(start,i+1));}catch(_){return null;}}
+  }
+  return null;
+}
+function objects(value) {
+  const out=[],queue=[value];
+  // Size/depth limits turn unfamiliar or pathological page formats into unknown.
+  while(queue.length&&out.length<20000) {
+    const v=queue.pop();if(!v||typeof v!=='object')continue;
+    out.push(v);for(const child of Object.values(v))if(child&&typeof child==='object')queue.push(child);
+  }
+  return queue.length?[]:out;
+}
+function utf8Bytes(value) {
+  let n=0;
+  for(const ch of String(value||'')){const c=ch.codePointAt(0);n+=c<128?1:c<2048?2:c<65536?3:4;}
+  return n;
+}
+function classify(response) {
+  const result=(status,reason,region=null)=>({status,reason,region});
+  if(!response||response.error)return result('unknown','network');
+  if(response.status!==200)return result('unknown','http');
+  const html=response.data;
+  if(typeof html!=='string'||!html.length||html.length>MAX_HTML)return result('unknown','body');
+  if(/our systems have detected unusual traffic|before you continue to (?:YouTube|Google)|id=["']captcha-form/i.test(html))return result('unknown','challenge');
+  const data=initialData(html);
+  if(!data||!data.contents)return result('unknown','page_format');
+  const rows=objects(data.contents);if(!rows.length)return result('unknown','page_format');
+  const text=rows.flatMap(v=>['text','content','simpleText','label'].map(k=>typeof v[k]==='string'?v[k]:'')).join('\n');
+  if(/(?:YouTube\s+)?Premium\s+(?:is\s+)?(?:not(?:\s+yet)?\s+available|unavailable)\s+in\s+your\s+(?:country|region)|(?:couldn[’']t|cannot|can[’']t)\s+verify\s+your\s+country/i.test(text))return result('unavailable','region_unavailable');
+  const regions=Array.from(html.matchAll(/"INNERTUBE_CONTEXT_GL"\s*:\s*"([A-Z]{2})"/g)).map(m=>m[1]);
+  if(!regions.length||new Set(regions).size!==1||['AA','XX','ZZ'].includes(regions[0]))return result('unknown','region_unknown');
+  // The full-Premium offer must have a price and an active purchase action.
+  // Generic marketing, sign-in links, and Premium Lite alone are insufficient.
+  const offer=rows.some(v=>{
+    const o=v.lpOfferCardOptionViewModel;if(!o)return false;
+    const b=o.purchaseButtonOverride&&o.purchaseButtonOverride.buttonViewModel;
+    if(!b||b.state!=='BUTTON_VIEW_MODEL_STATE_ACTIVE'||!/\d/.test(o.title&&o.title.content||''))return false;
+    return objects(b.onTap).some(x=>{
+      const e=x.browseEndpoint;
+      return e&&e.browseId==='SPunlimited'&&e.canonicalBaseUrl==='/premium'&&typeof e.params==='string'&&e.params.length>0;
+    });
+  });
+  return offer?result('available','full_premium_offer',regions[0]):result('unknown','no_full_premium_offer',regions[0]);
+}
+async function probe(env,descriptor,guard) {
+  await guard();
+  const r=await env.probe({descriptor,method:'GET',
+    url:'https://www.youtube.com/premium?hl=en&cf_rank_premium='+env.id(),timeout:8,
+    headers:{'User-Agent':UA,Accept:'text/html','Accept-Language':'en-US,en;q=0.9','Cache-Control':'no-cache','Connection':'close'}});
+  await guard();
+  return {...classify(r),checkedAt:env.now(),bytes:typeof r.data==='string'?utf8Bytes(r.data):Number(r.bytes)||0};
+}
+function qualified(value,now) {
+  return !!value&&value.status==='available'&&/^[A-Z]{2}$/.test(value.region||'')&&Array.isArray(value.samples)&&value.samples.length===3&&value.samples.every(s=>
+    s.status==='available'&&s.reason==='full_premium_offer'&&s.region===value.region&&
+    Number.isFinite(s.checkedAt)&&s.checkedAt<=now&&now-s.checkedAt<=MAX_AGE);
+}
+const api={MAX_AGE,MAX_HTML,initialData,classify,probe,qualified,utf8Bytes};
+if(typeof module==='object'&&module.exports)module.exports=api;else root.CFYouTubePremium=api;
+})(typeof globalThis==='object'?globalThis:this);
+
 (function (root) {
 'use strict';
+const premium=typeof module==='object'&&module.exports?require('./youtube-premium.js'):root.CFYouTubePremium;
 const MODES = {
   lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24 },
   full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24 }
@@ -287,17 +366,42 @@ async function execute(env,opts,pools,poolInfo=null) {
     }
     await update('稳定性与双次下载复测',++done,finalists.length);
   }
-  const selected=[];
-  for(const e of topDistinct(ranking,ranking.length)) { const check=await connect(e,'youtube');if(check.valid)selected.push(e);if(selected.length===10)break; }
-  assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,'稳定有效候选不足 10 个，保留原订阅');
+  const selected=[],premiumCandidates=topDistinct(ranking,ranking.length);
+  progress.premium={tested:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,bytes:0};
+  async function premiumProbe(e) {
+    const result=await premium.probe(env,descriptor(e,baseline.cfg),guard);
+    progress.premium.bytes+=result.bytes;
+    return result;
+  }
+  await update('YouTube Premium 检测',0,premiumCandidates.length);
+  for(const e of premiumCandidates) {
+    const samples=[await premiumProbe(e)];
+    if(samples[0].status==='available')samples.push(await premiumProbe(e));
+    const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region;
+    const status=available?'available':samples.some(s=>s.status==='unavailable')?'unavailable':samples.every(s=>s.status==='available')?'inconsistent':'unknown';
+    if(available)selected.push({...e,premium:{status,region:samples[0].region,samples}});
+    else progress.premium[status]++;
+    progress.premium.tested++;progress.premium.passed=selected.length;
+    await update('YouTube Premium 检测',progress.premium.tested,premiumCandidates.length);
+    if(selected.length===10)break;
+  }
+  assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
+    'Premium 合格 '+selected.length+'/10，不足 10 个，保留原订阅');
   const expectedNames=await exitNames(env,selected,baseline.cfg,guard,update);
+  await update('YouTube Premium 发布前复核',0,10);
+  for(const e of expectedNames) {
+    e.premium.samples.push(await premiumProbe(e));
+    assert(premium.qualified(e.premium,env.now()),'Premium 发布前复核未通过或结果过期，保留原订阅');
+    progress.premium.verified++;await update('YouTube Premium 发布前复核',progress.premium.verified,10);
+  }
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
   assert(fresh.cfg.fingerprint===baseline.cfg.fingerprint&&fresh.list===baseline.list,'测速期间后台被改动，已保留当前设置');
   assert(sameEntries(await raw(fresh.cfg),baseline.entries),'测速期间实际订阅已改变，跳过发布');
   await guard();
-  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,selected:expectedNames.map(({ip,port,key,name,egress,score,latency,samples})=>({ip,port,key,name,egress,score,latency,samples})),changed:false,verified:false};
+  assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
+  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.poolInfo=poolInfo;
   outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
   outcome.lightRequests=progress.lightRequests;
@@ -312,6 +416,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   if(baseline.list.trim()===proposed) { outcome.verified=await verify(fresh.cfg,expectedNames);assert(outcome.verified,'列表未变，但订阅转换未核对通过');return outcome; }
   try {
     publishing=true;await update('保存与订阅验证',0,1);
+    await guard();assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
     const response=await req('POST','/admin/ADD.txt',proposed);
     assert(response&&response.success===true,'后台未确认保存成功');
     outcome.changed=true;
@@ -500,7 +605,7 @@ function lastSuccess(s) {
   if(s.result&&s.result.selected&&(s.result.verified||s.stage==='完成')) {
     const r=s.result;
     return {at:r.publishedAt||r.finishedAt||s.updatedAt,network:s.network||null,mode:s.mode||r.mode,
-      count:r.selected.length,bytes:s.bytes||r.bytes||0,changed:!!r.changed,
+      count:r.selected.length,bytes:s.bytes||r.bytes||0,premiumBytes:r.premium&&r.premium.bytes||0,premiumVerified:r.premium&&r.premium.verified||0,changed:!!r.changed,
       elapsedMs:(r.finishedAt||s.updatedAt)-(r.startedAt||s.startedAt||s.updatedAt)};
   }
   return null;
@@ -508,24 +613,27 @@ function lastSuccess(s) {
 function mainContent(s,mode) {
   const last=lastSuccess(s);
   if(!last)return '尚无成功记录 · '+(mode==='full'?'完整档':'省流档')+'\n点击开始；进度见下方';
-  return (last.changed?'上次更新 ':'上次核对 ')+dateText(last.at)+' · '+last.count+' 节点\n'
-    +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
+  return (last.changed?'上次更新 ':'上次核对 ')+dateText(last.at)+' · '+last.count+' 节点'+(last.premiumVerified===10?' · YT✓':'')+'\n'
+    +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.11 已加载 · 尚未开始\n点击上方面板运行完整优选';
-  const traffic=Math.round((s.bytes||0)/1000000)+' MB';
+  if(!s.stage)return 'v0.1.12 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  const premium=s.premium||s.result&&s.result.premium;
+  const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
-    const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
+    const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','YouTube Premium 检测':'Premium 筛选','YouTube Premium 发布前复核':'Premium 复核','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
     const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
     if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
+    if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'
+      +(s.stage==='YouTube Premium 检测'?'通过 '+(premium&&premium.passed||0):'复核 '+(premium&&premium.verified||0))+'/10 · 正文 '+traffic;
     const percent=s.total?' · '+Math.min(100,Math.floor((s.done||0)/s.total*100))+'%':'';
-    return stage+percent+poolNote+'\n'+duration(now-(s.startedAt||now))+' · 下载 '+traffic+' · '+duration(age)+'前进展';
+    return stage+percent+poolNote+'\n'+duration(now-(s.startedAt||now))+' · 正文 '+traffic+' · '+duration(age)+'前进展';
   }
   if(s.stage==='名称已核对')return '10 个名称已核对 · 国旗 '+(s.nameResult?s.nameResult.selected.filter(e=>e.egress&&e.egress.country).length:0)+'/10\n未运行下载测速 · 请刷新订阅';
-  if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对'+poolNote+'\n'
+  if(s.stage==='完成')return '完成 · '+(s.result&&s.result.selected?s.result.selected.length:10)+' 节点已核对'+(premium&&premium.verified===10?' · Premium 10/10':'')+poolNote+'\n'
     +duration((s.updatedAt||now)-(s.startedAt||s.result&&s.result.startedAt||s.updatedAt||now))+' · '+traffic+' · 请刷新订阅';
   return s.stage+' · '+traffic+'\n'+(s.message||'查看脚本日志了解详情');
 }
@@ -553,7 +661,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.11';
+const UA='CF-Edge-AutoRank/0.1.12';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -575,11 +683,14 @@ function done(title,content,error,notify) {
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  const premium=s.premium||s.result&&s.result.premium;
+  if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
+  if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.poolInfo)lines.push('候选池：'+poolSource.label(s.poolInfo)+(s.poolInfo.fetchedAt?' · 获取于 '+ui.dateText(s.poolInfo.fetchedAt):''));
   if(s.message)lines.push(s.message);
-  if(s.result)lines.push(...s.result.selected.map((x,i)=>String(i+1).padStart(2,'0')+' '+x.key+' · '+x.score.toFixed(2)+' Mbps'));
+  if(s.result)lines.push(...s.result.selected.map((x,i)=>String(i+1).padStart(2,'0')+' '+x.key+' · '+x.score.toFixed(2)+' Mbps'+(x.premium?' · Premium '+x.premium.region:'')));
   return lines.join('\n');
 }
 function request(options,method) {
@@ -677,9 +788,9 @@ try {
   const result=await core.execute(env,opts,CF_RANK_POOLS,poolInfo);
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
-  const message=(result.changed?'前十已保存':'列表无变化')+'，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\n仅代表当前网络和本轮候选。';
+  const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
-  const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,changed:result.changed,elapsedMs:finishedAt-started};
+  const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
   write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
   done('Cloudflare 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true);
 } catch(error) {
