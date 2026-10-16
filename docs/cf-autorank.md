@@ -4,17 +4,23 @@
 
 节点名称为 `【国旗】 CF1-IP` 至 `【国旗】 CF10-IP`，例如 `【🇯🇵】 CF1-104.16.1.1`（格式示例，不是这个 IP 的实测结果）。国旗取自经该节点访问检测服务时观察到的出口 IP 的国家；名称中的 IP 仍是 CF 接入地址。
 
-## 远程安装
+## 固定链接安装与更新
 
-在 Surge 的模块页面选择通过 URL 安装，粘贴：
+日常使用统一安装下面这个不带版本号的固定地址，后续发布会同步更新它。在 Surge 的模块页面选择通过 URL 安装，粘贴：
 
 ```text
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.11.sgmodule
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule
 ```
 
-[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.11.sgmodule)
+[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank.sgmodule)
 
 模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.11.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
+
+以后在 Surge「模块」中更新这个已安装模块即可，不必删除后重新导入。后台域名、密码等参数保存在本机的模块实例中，后续版本保留现有参数名；不要把参数追加到 URL。参数保存机制见 [Surge 官方模块说明](https://manual.nssurge.com/profile/module.html)。
+
+从旧的 `CF-AutoRank-版本号.sgmodule` 迁移到固定地址只需一次：等当前测速结束，安装固定地址并填写参数，停用旧版本，只启用一份 CF 模块。不同 URL 安装的新实例不保证继承旧实例的参数；完成迁移后，后续只更新同一个模块。已用固定地址安装的用户直接更新即可。
+
+固定模块当前为 **0.1.11**，默认 `mode=lite`、`candidates=160`。内部脚本仍采用对应版本的 URL，模块更新会一起更新脚本引用；用户不必手动换 JS 地址。带版本号的文件保留用于复现和回退，日常不再使用它们安装新版。更新后可核对模块版本；网络缓存尚未刷新时，稍后再次更新，无需删除模块或重填参数。
 
 安装时填写参数：
 
@@ -65,7 +71,7 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 0.1.7 把国旗直接放在名称最前面。当前已验证的转换器会删除前置 emoji，造成原始订阅与 Surge 转换订阅名称不一致，模块随后尝试恢复备份。0.1.8 在国旗外加 `【】`，用于在原始与 Surge 转换订阅中保留国旗。检测无法确认国家时使用 `【🌐】`，不猜测、不沿用旧国旗。转换设置不需要调整。
 
-本版保留原先的两次出口观察、保存前并发检查、保存后两种订阅精确名称核对及失败恢复保护。模块升级本身不改后台；固定版本的 0.1.7 链接也不会自行升级，需导入上方的当前版本链接，只启用一份 CF 模块。
+本版保留原先的两次出口观察、保存前并发检查、保存后两种订阅精确名称核对及失败恢复保护。模块升级本身不改后台；固定版本的 0.1.7 链接也不会自行升级。日常升级请按上方说明迁移到固定地址，只启用一份 CF 模块。
 
 参考：[subconverter 名称处理](https://github.com/tindy2013/subconverter/blob/master/src/generator/config/nodemanip.cpp)、[旧式 emoji 参数处理](https://github.com/tindy2013/subconverter/blob/master/src/handler/interfaces.cpp)。
 
@@ -85,7 +91,7 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 0.1.6 调整了面板与脚本标识，并提供静态占位及独立版本资源。面板显示和后台运行仍受 Surge 与系统版本影响；可结合版本标识和进度面板确认状态。
 
-升级前等测速结束，停用旧 CF 模块，导入本版并填写原后台参数，只启用一份。这里的操作仅针对 CF 模块，不需要编辑主配置、策略组或代理模式。固定版本链接便于避开旧资源缓存；以后升级需要使用新版本链接。
+当时 0.1.6 使用独立版本地址安装以排查缓存问题。现在日常更新请使用上方固定地址：迁移一次后更新同一个模块即可，保留已填写参数。无需编辑主配置、策略组或代理模式。
 
 **0.1.6 仅改名行为（0.1.7 已增加上述出口检测）**：内部 `CF-AutoRank-Rename` 动作不测速，只按现有顺序改为 `CF1-IP` 至 `CF10-IP`，保留 IP 和端口。收到名称核对成功提示后，再刷新原 CF 订阅。它保留上一次测速时间和网络记录，不把改名当成新测速。
 
@@ -93,7 +99,7 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 ## 使用与进度
 
-先等当前测速结束，再停用旧 CF 模块并导入 0.1.11，填写原后台参数，只启用一份。无需编辑原主配置、策略组或代理模式。
+先等当前测速结束，再按上方说明安装或更新固定地址的模块；确认版本 0.1.11、`mode=lite`、`candidates=160`，只启用一份 CF 模块。无需编辑原主配置、策略组或代理模式。
 
 **Cloudflare 一键优选**：橙色云朵 `cloud.fill`，点击一次完成测速、前十筛选、出口国家检测、带旗名称保存和两种订阅核对。它显示上次成功的记录，示例如下（示例数据）：
 
