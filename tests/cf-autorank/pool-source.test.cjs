@@ -71,6 +71,6 @@ test('current out-of-pool endpoints are retained exactly without widening random
  assert.throws(()=>C.includeCurrent('9.9.9.9:80#Bad',legacy));
 });
 test('lite keeps sample sizes and defaults to 160 download candidates',()=>{
- assert.deepEqual(C.MODES.lite,{screenBytes:131072,sampleBytes:2000000,finalists:24});
+ assert.deepEqual(C.MODES.lite,{screenBytes:131072,sampleBytes:2000000,finalists:24,reserveFinalists:24});
  const settings=C.settings('start|example.net');assert.equal(settings.mode,'lite');assert.equal(settings.limit,160);
 });

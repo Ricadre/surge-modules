@@ -81,7 +81,7 @@ test('Premium failure never updates backend and preserves the previous successfu
  const key='CFEdgeRank_example.net',lastSuccess={at:Date.now()-3600000,network:{kind:'cellular'},count:10,bytes:1000,changed:true,mode:'lite'};
  const r=await run('start|example.net|lite|40|local-secret','button',{[key]:JSON.stringify({lastSuccess})},{premiumUnavailable:true});
  assert.equal(r.writes.length,0);const saved=JSON.parse(r.store[key]);assert.equal(saved.running,false);assert.equal(saved.stage,'未完成');
- assert.deepEqual(saved.lastSuccess,lastSuccess);assert.equal(saved.premium.passed,0);assert.equal(saved.premium.unavailable,24);
+ assert.deepEqual(saved.lastSuccess,lastSuccess);assert.equal(saved.premium.passed,0);assert.equal(saved.premium.unavailable,40);
  assert.match(r.output.content,/Premium 合格 0\/10/);assert(!r.output.content.includes('YT✓'));
 });
 test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
@@ -291,4 +291,19 @@ test('network changes while waiting for a backend retry prevent subsequent reque
   }
  }});
  assert(failed);assert.equal(r.writes.length,0);assert.match(r.output.content,/网络变化/);
+});
+
+test('adapter persists reserve progress and publishes ten only after on-demand supplementation',async()=>{
+ const seen=[];
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options})=>{
+  if(!options.url.startsWith('https://www.youtube.com/premium?'))return;
+  const d=options['policy-descriptor'];if(!seen.includes(d))seen.push(d);
+  if(seen.indexOf(d)>=7&&seen.indexOf(d)<24)return {status:200,data:premiumPage({unavailable:true})};
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']);
+ assert.equal(r.writes.length,1);assert(s.result.verified);assert.equal(s.result.supplement.added,3);
+ assert.equal(s.result.premium.verified,10);assert.equal(seen.length,27);
+ assert(r.states.some(x=>x.value.stage==='后备 Premium 检测'&&x.value.supplement.examined===3));
+ assert(r.states.some(x=>x.value.stage==='后备节点速度复测'));
+ assert(r.logs.some(x=>x.includes('补入 3')));
 });

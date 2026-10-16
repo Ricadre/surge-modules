@@ -8,7 +8,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.13';
+const UA='CF-Edge-AutoRank/0.1.14';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -33,6 +33,9 @@ function statusText(s){
   const premium=s.premium||s.result&&s.result.premium;
   if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
+  const supplement=s.supplement||s.result&&s.result.supplement;
+  if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
+  if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+'/10');
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.poolInfo)lines.push('候选池：'+poolSource.label(s.poolInfo)+(s.poolInfo.fetchedAt?' · 获取于 '+ui.dateText(s.poolInfo.fetchedAt):''));

@@ -2,8 +2,8 @@
 'use strict';
 const premium=typeof module==='object'&&module.exports?require('./youtube-premium.js'):root.CFYouTubePremium;
 const MODES = {
-  lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24 },
-  full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24 }
+  lite: { screenBytes: 131072, sampleBytes: 2000000, finalists: 24, reserveFinalists: 24 },
+  full: { screenBytes: 524288, sampleBytes: 8000000, finalists: 24, reserveFinalists: 24 }
 };
 const LIGHT_SCREEN={lite:{candidates:1280,concurrency:8,timeout:4},full:{candidates:2560,concurrency:8,timeout:4}};
 const TLS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
@@ -276,39 +276,90 @@ async function execute(env,opts,pools,poolInfo=null) {
   await pool(downloadEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,downloadEntries.length);});
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
-  const ranking=[];done=0;
-  for(const e of finalists) {
-    await update('稳定性与双次下载复测',done,finalists.length);
+  async function refine(e) {
     const checks=[];
     for(let n=0;n<3;n++) { checks.push(await connect(e,'gstatic'));checks.push(await connect(e,'youtube'));if(checks.some(x=>!x.valid))break; }
     if(checks.length===6&&checks.every(x=>x.valid)) {
       const samples=[await download(e,mode.sampleBytes,8),await download(e,mode.sampleBytes,8)];
-      ranking.push({...e,valid:samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),latency:median(checks.map(x=>x.ms)),checks,samples});
+      await guard();
+      return {...e,valid:samples.every(x=>x.valid),score:Math.min(...samples.map(x=>x.mbps)),latency:median(checks.map(x=>x.ms)),checks,samples};
     }
+    return null;
+  }
+  const ranking=[];done=0;
+  for(const e of finalists) {
+    await update('稳定性与双次下载复测',done,finalists.length);
+    const row=await refine(e);if(row)ranking.push(row);
     await update('稳定性与双次下载复测',++done,finalists.length);
   }
   const selected=[],premiumCandidates=topDistinct(ranking,ranking.length);
-  progress.premium={tested:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,bytes:0};
+  progress.premium={tested:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,bytes:0};
   async function premiumProbe(e) {
     const result=await premium.probe(env,descriptor(e,baseline.cfg),guard);
     progress.premium.bytes+=result.bytes;
     return result;
   }
-  await update('YouTube Premium 检测',0,premiumCandidates.length);
-  for(const e of premiumCandidates) {
+  async function premiumPair(e) {
     const samples=[await premiumProbe(e)];
     if(samples[0].status==='available')samples.push(await premiumProbe(e));
     const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region;
     const status=available?'available':samples.some(s=>s.status==='unavailable')?'unavailable':samples.every(s=>s.status==='available')?'inconsistent':'unknown';
-    if(available)selected.push({...e,premium:{status,region:samples[0].region,samples}});
-    else progress.premium[status]++;
-    progress.premium.tested++;progress.premium.passed=selected.length;
+    return {status,region:available?samples[0].region:null,samples};
+  }
+  async function checkCandidate(e) {
+    const result=await premiumPair(e);
+    progress.premium.tested++;
+    if(result.status!=='available')progress.premium[result.status]++;
+    return result;
+  }
+  await update('YouTube Premium 检测',0,premiumCandidates.length);
+  for(const e of premiumCandidates) {
+    const result=await checkCandidate(e);
+    if(result.status==='available')selected.push({...e,premium:result});
+    progress.premium.passed=selected.length;
     await update('YouTube Premium 检测',progress.premium.tested,premiumCandidates.length);
     if(selected.length===10)break;
   }
+  // Reuse this round's successful download shortlist. Never retest a failed
+  // finalist or admit an entry using only its lightweight screening score.
+  const finalistIPs=new Set(finalists.map(e=>e.ip));
+  const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
+  progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
+  if(selected.length<10) {
+    await update('后备 Premium 检测',0,reserves.length);
+    for(const e of reserves) {
+      await guard();
+      if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;break;}
+      const result=await checkCandidate(e);progress.supplement.examined++;
+      if(result.status==='available') {
+        progress.supplement.eligible++;
+        await update('后备节点速度复测',progress.supplement.refined,mode.reserveFinalists);
+        progress.supplement.refined++;
+        const row=await refine(e);
+        if(row&&row.valid){selected.push({...row,premium:result});progress.supplement.added++;}
+        else progress.supplement.failedRefine++;
+      }
+      progress.premium.passed=selected.length;
+      await update('后备 Premium 检测',progress.supplement.examined,reserves.length);
+      if(selected.length===10)break;
+    }
+    await update('后备 Premium 检测',progress.supplement.examined,reserves.length);
+  }
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
-    'Premium 合格 '+selected.length+'/10，不足 10 个，保留原订阅');
+    'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
+  selected.splice(0,selected.length,...topDistinct(selected,10));
   const expectedNames=await exitNames(env,selected,baseline.cfg,guard,update);
+  // A longer reserve pass must not make earlier evidence silently expire.
+  // Replace old pairs with fresh evidence; keep the three-check/10-minute rule.
+  if(expectedNames.some(e=>e.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2))) {
+    await update('更新 Premium 检测记录',0,10);
+    for(const e of expectedNames) {
+      const result=await premiumPair(e);
+      assert(result.status==='available','Premium 更新检测未通过，保留原订阅');
+      e.premium=result;progress.premium.refreshed++;
+      await update('更新 Premium 检测记录',progress.premium.refreshed,10);
+    }
+  }
   await update('YouTube Premium 发布前复核',0,10);
   for(const e of expectedNames) {
     e.premium.samples.push(await premiumProbe(e));
@@ -323,6 +374,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   await guard();
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
+  outcome.supplement={...progress.supplement};
   outcome.poolInfo=poolInfo;
   outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
   outcome.lightRequests=progress.lightRequests;

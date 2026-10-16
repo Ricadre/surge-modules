@@ -1,17 +1,17 @@
 #!name=Cloudflare 一键优选（预览版）
-#!version=0.1.13
-#!desc=每轮更新候选池；省流1280个轻量初筛、最多160个下载、前24个复测。仅发布10个通过YouTube Premium检测的入口，不足保留原列表。后台读取失败有限重试；两个面板。下载样本约117MB，另计Premium页面及握手开销。
+#!version=0.1.14
+#!desc=每轮更新候选池；省流1280个轻量初筛、最多160个下载、前24个复测；Premium不足10个时按需补选后备，最多额外复测24个。仅发布10个全部通过的入口，否则保留原列表。两个面板；省流下载样本约117MB，补选最多另加96MB，另计Premium页面及握手开销。
 #!arguments=backend,mode:lite,candidates:160,admin_password
 #!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。candidates为下载初筛上限40–1024，默认160；轻量初筛独立固定为省流1280个、完整2560个，不随candidates变化。
 
 [Script]
-CF-AutoRank-Run = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.13.js,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
-CF-AutoRank-Status = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.13.js,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-AutoRank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.13.js,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
-CF-AutoRank-Verify = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.13.js,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-AutoRank-Run = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.14.js,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-AutoRank-Status = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.14.js,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.14.js,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Verify = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.14.js,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
 
-CF-AutoRank-Rename = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.13.js,timeout=600,engine=webview,argument="rename|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-AutoRank-Rename = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.14.js,timeout=600,engine=webview,argument="rename|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
 
 [Panel]
-CF-AutoRank-Overview = title="Cloudflare 一键优选",content="v0.1.13 模块已载入\n点击开始；进度见下方",style=info,icon=cloud.fill,icon-color=#F48120,script-name=CF-AutoRank-Run,update-interval=1
-CF-AutoRank-Progress = title="Cloudflare 测速进度",content="v0.1.13 模块已载入\n刷新查看进度",style=info,icon=chart.bar.fill,icon-color=#F48120,script-name=CF-AutoRank-Status,update-interval=1
+CF-AutoRank-Overview = title="Cloudflare 一键优选",content="v0.1.14 模块已载入\n点击开始；进度见下方",style=info,icon=cloud.fill,icon-color=#F48120,script-name=CF-AutoRank-Run,update-interval=1
+CF-AutoRank-Progress = title="Cloudflare 测速进度",content="v0.1.14 模块已载入\n刷新查看进度",style=info,icon=chart.bar.fill,icon-color=#F48120,script-name=CF-AutoRank-Status,update-interval=1

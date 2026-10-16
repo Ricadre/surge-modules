@@ -47,3 +47,11 @@ test('existing progress card identifies fallback pools while staying at two line
   const card=U.view('status',state,now,'lite');assert(card.content.includes(note));assert.equal(card.content.split('\n').length,2);
  }
 });
+
+test('reserve and evidence-refresh stages persist selection counts in the existing two-line panel',()=>{
+ for(const [stage,label] of [['后备 Premium 检测','后备 Premium'],['后备节点速度复测','补选复测'],['更新 Premium 检测记录','更新 Premium']]) {
+  const s={running:true,stage,done:2,total:16,updatedAt:now,bytes:120000000,premium:{passed:7,bytes:30000000}};
+  const card=U.view('status',s,now,'lite');
+  assert.equal(card.content,label+' 2/16\n已选 7/10 · 正文 150 MB');
+ }
+});

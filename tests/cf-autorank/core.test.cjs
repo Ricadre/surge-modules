@@ -15,7 +15,7 @@ function fixture(options={}) {
   geoip:ip=>{geoCalls.push(ip);return options.geoipUnknown?'':'US';},
   cancelled:async()=>options.cancel&&probes>8,
   sleep:async ms=>{time+=ms;},
-  progress:async p=>progress.push({...p}),backup:async b=>{assert.equal(b.list,original);},
+  progress:async p=>progress.push(structuredClone(p)),backup:async b=>{assert.equal(b.list,original);},
   login:async()=>{if(options.loginFail)throw new Error('登录失败');},
   control:async(method,path,body)=>{
    calls.push([method,path]);
@@ -73,6 +73,8 @@ test('successful end-to-end mock publishes only ADD.txt and verifies both subscr
  assert(r.changed&&r.verified);assert.equal(r.selected.length,10);assert.equal(new Set(r.selected.map(x=>x.ip)).size,10);assert.equal(f.posts.length,1);
  assert.equal(r.candidateCount,1280);assert.equal(r.downloadCandidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
  assert(r.selected.every(x=>x.samples.length===2));
+ assert.equal(r.supplement.examined,0);assert.equal(r.supplement.refined,0);
+ assert(!f.progress.some(p=>p.stage.startsWith('后备')));
  assert.equal(r.premium.verified,10);assert(r.selected.every(x=>x.premium.status==='available'&&x.premium.samples.length===3));
 });
 test('Premium filtering skips faster unavailable nodes and ranks passing nodes by conservative speed',async()=>{
@@ -100,7 +102,92 @@ test('only nine Premium-capable nodes never publish or fill with unqualified ent
   return probe(spec);
  };
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 9\/10/);
- assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);assert.equal(seen.length,24);
+ assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);assert.equal(seen.length,40);
+});
+// Synthetic scenario: seven of the first 24 pass; later candidates are reserves.
+function reserveFixture(options={}) {
+ const f=fixture(),probe=f.env.probe,progress=f.env.progress,now=f.env.now;
+ const seen=[],downloads=[],events=[];let stage='',elapsed=0;
+ f.opts.limit=options.limit||40;f.opts.mode=options.mode||'lite';
+ f.env.now=()=>now()+elapsed;
+ f.env.progress=async p=>{stage=p.stage;await progress(p);};
+ f.env.probe=async spec=>{
+  const response=await probe(spec),d=spec.descriptor;
+  if(spec.url.startsWith('https://www.youtube.com/premium?')) {
+   if(!seen.includes(d))seen.push(d);
+   const i=seen.indexOf(d);events.push({kind:'premium',descriptor:d,stage});
+   if(i===24&&options.delayed)elapsed=11*60*1000;
+   if((i>=7&&i<24)||i===24&&options.rejectFirstReserve||stage==='更新 Premium 检测记录'&&options.refreshFailure)
+    return {...response,data:premiumPage({unavailable:true})};
+  }
+  if(spec.headers.Range) {
+   const [a,b]=spec.headers.Range.slice(6).split('-').map(Number),size=b-a+1;
+   if(size>C.MODES[f.opts.mode].screenBytes) {
+    downloads.push({descriptor:d,size});events.push({kind:'download',descriptor:d,stage});
+    if(seen.indexOf(d)>=24) {
+     if(options.rejectReserveDownloads||seen.indexOf(d)===25&&options.rejectSecondRefine)return {...response,status:503};
+     response.ms=50; // A reserve can outrank earlier selections after full retesting.
+    }
+   }
+  }
+  return response;
+ };
+ return {...f,seen,downloads,events};
+}
+test('seven initial qualifiers are filled from reserves then sorted by full retest speed',async()=>{
+ for(const mode of ['lite','full']) {
+  const f=reserveFixture({mode}),r=await C.execute(f.env,f.opts,pools);
+  assert(r.verified);assert.equal(f.posts.length,1);assert.equal(f.seen.length,27);
+  assert.equal(r.supplement.examined,3);assert.equal(r.supplement.refined,3);assert.equal(r.supplement.added,3);
+  assert.equal(f.downloads.length,54);assert(f.downloads.every(d=>d.size===C.MODES[mode].sampleBytes));
+  assert.equal(r.bytes,40*C.MODES[mode].screenBytes+54*C.MODES[mode].sampleBytes);
+  assert(r.premium.bytes>0);assert.equal(r.premium.verified,10);assert.equal(r.premium.refreshed,0);
+  assert.equal(new Set(r.selected.map(e=>e.ip)).size,10);
+  assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
+  assert(f.seen.slice(24).some(d=>d.startsWith('CF-Probe-'+r.selected[0].ip+'-')));
+  assert(r.selected.every(e=>e.premium.samples.length===3&&e.samples.every(s=>s.valid)));
+  for(const d of f.seen.slice(24)) {
+   const events=f.events.filter(e=>e.descriptor===d);
+   assert.deepEqual(events.slice(0,4).map(e=>e.kind),['premium','premium','download','download']);
+  }
+ }
+});
+test('reserve Premium failures cost no full downloads and failed full retests cannot fill slots',async()=>{
+ const f=reserveFixture({rejectFirstReserve:true,rejectSecondRefine:true}),r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.supplement.examined,5);assert.equal(r.supplement.refined,4);
+ assert.equal(r.supplement.added,3);assert.equal(r.supplement.failedRefine,1);
+ assert(!f.downloads.some(d=>d.descriptor===f.seen[24]));
+ assert(r.selected.every(e=>![24,25].some(i=>f.seen[i].startsWith('CF-Probe-'+e.ip+'-'))));
+});
+test('reserve retesting stops at 24 extra candidates instead of consuming unbounded downloads',async()=>{
+ const f=reserveFixture({limit:160,rejectReserveDownloads:true});
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 7\/10，补选复测达到上限/);
+ assert.equal(f.seen.length,48);assert.equal(f.downloads.length,96);
+ const s=f.progress.at(-1).supplement;assert.equal(s.refined,24);assert.equal(s.added,0);assert(s.limited);
+ assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+});
+test('a long reserve pass refreshes old Premium pairs without weakening the final age rule',async()=>{
+ const f=reserveFixture({delayed:true}),r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.premium.refreshed,10);assert.equal(r.premium.verified,10);
+ const P=require('../../src/cf-autorank/youtube-premium.js');
+ assert(r.selected.every(e=>P.qualified(e.premium,f.env.now())));
+ assert.equal(f.events.filter(e=>e.stage==='更新 Premium 检测记录').length,20);
+ assert(f.progress.some(p=>p.stage==='更新 Premium 检测记录'&&p.done===10));
+});
+test('a lost Premium qualification during evidence refresh keeps the original subscription',async()=>{
+ const f=reserveFixture({delayed:true,refreshFailure:true});
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 更新检测未通过/);
+ assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+});
+test('network changes or cancellation during reserve probes stop further work and publication',async()=>{
+ for(const kind of ['network','cancel']) {
+  const f=reserveFixture(),probe=f.env.probe;let stopped=false;
+  f.env.networkKey=()=>kind==='network'&&stopped?'new':'old';
+  f.env.cancelled=async()=>kind==='cancel'&&stopped;
+  f.env.probe=async spec=>{const r=await probe(spec);if(f.seen.length===25)stopped=true;return r;};
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/网络变化|取消/);
+  assert.equal(f.downloads.length,48);assert.equal(f.posts.length,0);
+ }
 });
 test('unknown, Lite-only and changing Premium regions fail closed',async()=>{
  for(const kind of ['timeout','lite','region-change']) {
