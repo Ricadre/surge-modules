@@ -12,7 +12,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.18';
+const UA='CF-Edge-AutoRank/0.1.19';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -84,6 +84,11 @@ function statusText(s){
   const timings=s.result&&s.result.stageTimings||s.stageTimings;
   if(timings)lines.push('各阶段耗时：'+Object.entries(timings).filter(([,ms])=>ms>=1000).map(([stage,ms])=>stage+' '+Math.round(ms/1000)+'秒').join(' · '));
   const light=s.result&&s.result.lightScreen||s.lightScreen;
+  if(light&&Number.isInteger(light.firstTested)){
+    lines.push('轻量首检：覆盖 '+light.firstTested+'/'+light.firstTotal+' 个入口 · 首检合格 '+light.firstPassed+' 个 IP');
+    lines.push('轻量二检：请求 '+light.secondRequests+' 次 · 已完成 '+light.secondTested+' 次 · 确认 '+light.secondPassed+' 个 IP 双检合格 · '+(light.selectionComplete?'省略 '+light.skippedSecond+' 次':'尚未完成，省略数量未结算'));
+    lines.push('轻量请求：首检 '+light.firstRequests+' 次（含降载复检） · 二检 '+light.secondRequests+' 次');
+  }
   if(light)lines.push('轻量检测：最高并发 '+light.maxConcurrency+' · 降载 '+light.backoffs+' 次 · 复核 '+light.rechecked+' 个');
   const refinement=s.result&&s.result.refinement||s.refinement;
   if(refinement)lines.push('下载复测：省去第二遍 '+refinement.savedSecondSamples+' 次（首遍无效 '+(refinement.skippedInvalidFirst+refinement.reserveSkippedInvalidFirst)+' · 已无法入选 '+refinement.skippedByBound+'）');
@@ -258,7 +263,10 @@ try {
   result.stageTimings={...preludeTimings,...result.stageTimings};
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
-  const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
+  const coverage=result.lightScreen&&Number.isInteger(result.lightScreen.firstTested)?
+    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个进入下载初筛':
+    '本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选';
+  const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n'+coverage+'；'+complete+'/20 次下载复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
   ownedWrite({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});

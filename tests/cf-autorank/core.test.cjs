@@ -236,7 +236,8 @@ test('flaky second light responses cannot enter the download shortlist',async()=
  f.env.probe=async spec=>{
   if(spec.url.includes('cf_rank_light=')) {
    const n=(attempts.get(spec.descriptor)||0)+1;attempts.set(spec.descriptor,n);
-   if(failed.has(spec.descriptor)||n===2&&attempts.size%3===0){failed.add(spec.descriptor);return {status:204,ms:100,error:'timeout'};}
+   const ordinal=Number(/CF-Probe-\d+\.\d+\.\d+\.(\d+)-/.exec(spec.descriptor)[1]);
+   if(failed.has(spec.descriptor)||spec.url.includes('-p2-')&&ordinal%3===0){failed.add(spec.descriptor);return {status:204,ms:100,error:'timeout'};}
   }
   if(spec.headers.Range)downloaded.add(spec.descriptor);
   return probe(spec);

@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.18. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.19. Credentials are entered by the user; never bundle secrets.
 (function(root) {
 'use strict';
 const MAX_HTML=2500000;
@@ -396,6 +396,128 @@ function pickDownloads(rows,current,limit,rng=Math.random) {
   for(let i=remaining.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[remaining[i],remaining[j]]=[remaining[j],remaining[i]];}
   return result.concat(remaining.slice(0,explore).map(e=>({...e,downloadReason:'exploration'})));
 }
+async function selectiveLightScreen(entries,current,limit,options,probe,report=async()=>{},rng=Math.random) {
+  const unique=new Map();entries.forEach(e=>{if(!unique.has(e.key))unique.set(e.key,e);});
+  const states=Array.from(unique.values(),entry=>({entry,first:null,second:undefined}));
+  const groups=new Map(),currentKeys=new Set(current.map(e=>e.key));
+  for(const state of states) {
+    if(!groups.has(state.entry.ip))groups.set(state.entry.ip,{ip:state.entry.ip,states:[]});
+    groups.get(state.entry.ip).states.push(state);
+  }
+  // One random position per IP, assigned before any second observation. A port
+  // cannot buy extra exploration chances, and later quota changes keep this order.
+  const explorationOrder=Array.from(groups.values());
+  for(let i=explorationOrder.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[explorationOrder[i],explorationOrder[j]]=[explorationOrder[j],explorationOrder[i]];}
+  explorationOrder.forEach((g,i)=>{g.priority=i;});
+  const stats={firstTotal:states.length,firstTested:0,firstPassed:0,firstPassedEntries:0,firstRequests:0,
+    secondTested:0,secondPassed:0,secondPassedEntries:0,secondRequests:0,skippedSecond:0,selectionComplete:false,
+    maxConcurrency:options.concurrency,firstConcurrency:options.concurrency,secondConcurrency:options.secondConcurrency||options.concurrency,
+    backoffs:0,rechecked:0,batches:[],allocation:{current:0,latency:0,exploration:0}};
+  const firstIPs=new Map(),secondIPs=new Map();
+  function adjust(map,ip,delta) {const count=(map.get(ip)||0)+delta;if(count)map.set(ip,count);else map.delete(ip);}
+  function storeSample(state,field,sample) {
+    const oldFirst=lightValid(state.first),oldSecond=oldFirst&&lightValid(state.second);
+    // null marks an attempted but unknown result; undefined means untested.
+    state[field]=sample===undefined?null:sample;
+    const newFirst=lightValid(state.first),newSecond=newFirst&&lightValid(state.second);
+    if(oldFirst!==newFirst){const delta=newFirst?1:-1;stats.firstPassedEntries+=delta;adjust(firstIPs,state.entry.ip,delta);}
+    if(oldSecond!==newSecond){const delta=newSecond?1:-1;stats.secondPassedEntries+=delta;adjust(secondIPs,state.entry.ip,delta);}
+    stats.firstPassed=firstIPs.size;stats.secondPassed=secondIPs.size;
+  }
+  async function emit(phase,done,total,concurrency,rechecking=false) {
+    await report({phase,done,total,concurrency,rechecking,stats});
+  }
+  let width=options.concurrency,baseline=null,cooldown=0;
+  for(let offset=0;offset<states.length;offset+=options.batchSize) {
+    const batch=states.slice(offset,offset+options.batchSize);
+    async function measure(n,rechecking) {
+      let done=0;stats.maxConcurrency=Math.max(stats.maxConcurrency,n);stats.firstConcurrency=n;
+      if(rechecking)batch.forEach(s=>{storeSample(s,'first',null);});
+      await pool(batch,n,async state=>{
+        stats.firstRequests++;storeSample(state,'first',await probe(state.entry,1));done++;
+        if(!rechecking)stats.firstTested=offset+done;
+        await emit(rechecking?'first-recheck':'first',rechecking?done:offset+done,rechecking?batch.length:states.length,n,rechecking);
+      });
+      const good=batch.filter(s=>lightValid(s.first));
+      return {good:good.length,failed:1-good.length/batch.length,latency:median(good.map(s=>s.first.ms))};
+    }
+    let sample=await measure(width,false);
+    const elevated=width>options.concurrency&&baseline&&(
+      sample.failed>baseline.failed+0.20||sample.latency!==null&&baseline.latency!==null&&
+      sample.latency>Math.max(baseline.latency*1.6,baseline.latency+150));
+    stats.batches.push({offset,count:batch.length,concurrency:width,...sample,rechecked:!!elevated});
+    if(elevated) {
+      stats.backoffs++;stats.rechecked+=batch.length;width=options.concurrency;cooldown=2;
+      sample=await measure(width,true);stats.batches.push({offset,count:batch.length,concurrency:width,...sample,recovery:true});
+      await emit('first',offset+batch.length,states.length,width);
+    }
+    if(width===options.concurrency)baseline=sample;
+    if(cooldown>0)cooldown--;else if(stats.backoffs<2&&sample.good>=8)width=Math.min(options.maxConcurrency,width+4);
+  }
+  // Reuse only the final concurrency that actually completed the first pass.
+  // The selectively measured second-pass sample must not set a new baseline.
+  stats.secondConcurrency=Math.max(1,Math.min(16,options.maxConcurrency,options.secondConcurrency||stats.firstConcurrency));
+  const firstPassed=states.filter(s=>lightValid(s.first));
+  const compare=(a,b)=>a.lightLatency-b.lightLatency||a.key.localeCompare(b.key);
+  function row(state) {return {...state.entry,lightSamples:[state.first,state.second],lightLatency:Math.max(state.first.ms,state.second.ms)};}
+  function best(group,onlyCurrent=false) {
+    return group.states.filter(s=>lightValid(s.first)&&lightValid(s.second)&&(!onlyCurrent||currentKeys.has(s.entry.key)))
+      .map(row).sort(compare)[0];
+  }
+  async function seconds(pending,phase) {
+    const todo=pending.filter(s=>lightValid(s.first)&&s.second===undefined);
+    await pool(todo,stats.secondConcurrency,async state=>{
+      stats.secondRequests++;storeSample(state,'second',await probe(state.entry,2));stats.secondTested++;
+      await emit(phase,stats.secondTested,firstPassed.length,stats.secondConcurrency);
+    });
+  }
+  await emit('second-current',0,firstPassed.length,stats.secondConcurrency);
+  await seconds(firstPassed.filter(s=>currentKeys.has(s.entry.key)),'second-current');
+  const currentRows=Array.from(groups.values(),g=>best(g,true)).filter(Boolean).sort(compare);
+  const retained=currentRows.slice(0,limit),currentIPs=new Set(currentRows.map(e=>e.ip));
+  const otherGroups=Array.from(groups.values()).filter(g=>!currentIPs.has(g.ip));
+  const available=limit-retained.length,explore=Math.floor(available/5),fast=available-explore;
+  const knownOthers=()=>otherGroups.map(g=>best(g)).filter(Boolean).sort(compare);
+  if(available>0) {
+    const pending=otherGroups.flatMap(g=>g.states).filter(s=>lightValid(s.first)&&s.second===undefined)
+      .sort((a,b)=>a.first.ms-b.first.ms||a.entry.key.localeCompare(b.entry.key));
+    let offset=0;
+    while(offset<pending.length) {
+      const known=knownOthers(),cutoff=known.length>=fast?known[fast-1].lightLatency:Infinity;
+      // max(first, second) cannot be smaller than first. Equality must still be
+      // measured because the original key tie-break can change the shortlist.
+      if(pending[offset].first.ms>cutoff)break;
+      const batch=[];
+      while(offset<pending.length&&batch.length<stats.secondConcurrency&&pending[offset].first.ms<=cutoff)batch.push(pending[offset++]);
+      await seconds(batch,'second-latency');
+    }
+    const quick=knownOthers().slice(0,fast),quickIPs=new Set(quick.map(e=>e.ip));
+    const otherIPs=new Set(otherGroups.map(g=>g.ip));
+    const randomGroups=explorationOrder.filter(g=>otherIPs.has(g.ip)&&!quickIPs.has(g.ip));
+    let cursor=0,found=0;
+    while(cursor<randomGroups.length&&found<explore) {
+      // Drain each bounded batch before selecting another. For a chosen IP,
+      // inspect all remaining ports so its best valid endpoint is retained.
+      const batch=randomGroups.slice(cursor,cursor+Math.min(stats.secondConcurrency,explore-found));cursor+=batch.length;
+      await seconds(batch.flatMap(g=>g.states),'second-exploration');
+      found+=batch.filter(g=>best(g)).length;
+    }
+    if(knownOthers().length<available) {
+      // If fewer than the requested number can qualify, finish the remaining
+      // first-pass candidates before recomputing both quotas from actual supply.
+      await seconds(otherGroups.flatMap(g=>g.states),'second-exploration');
+    }
+  }
+  const others=knownOthers(),supply=Math.min(available,others.length),exploreFinal=Math.floor(supply/5),fastFinal=supply-exploreFinal;
+  const quickest=others.slice(0,fastFinal),fastIPs=new Set(quickest.map(e=>e.ip));
+  const otherByIP=new Map(others.map(e=>[e.ip,e]));
+  const random=explorationOrder.filter(g=>otherByIP.has(g.ip)&&!fastIPs.has(g.ip)).slice(0,exploreFinal).map(g=>otherByIP.get(g.ip));
+  const downloads=retained.map(e=>({...e,downloadReason:'current'})).concat(quickest.map(e=>({...e,downloadReason:'latency'})),random.map(e=>({...e,downloadReason:'exploration'})));
+  stats.allocation={current:retained.length,latency:quickest.length,exploration:random.length};
+  stats.skippedSecond=firstPassed.length-stats.secondTested;stats.selectionComplete=true;
+  await emit('second-complete',firstPassed.length,firstPassed.length,stats.secondConcurrency);
+  return {rows:states.filter(s=>lightValid(s.first)&&lightValid(s.second)).map(row),downloads,stats};
+}
 async function execute(env,opts,pools,poolInfo=null) {
   const samplingPools=pools,official=poolInfo?poolInfo.official:[];
   pools=pools.concat(official);
@@ -430,22 +552,18 @@ async function execute(env,opts,pools,poolInfo=null) {
     return {valid:!r.error&&r.status===204,ms:r.ms,status:r.status||0};
   }
   progress.lightRequests=0;
-  const light=await adaptiveLightScreen(entries,LIGHT_SCREEN[opts.mode],async e=>{
-    const lightSamples=[];
-    for(let attempt=0;attempt<2;attempt++) {
-      await guard();progress.lightRequests++;
-      const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'HEAD',
-        url:'http://www.gstatic.com/generate_204?cf_rank_light='+runId+'-'+env.id(),timeout:LIGHT_SCREEN[opts.mode].timeout,
-        headers:{'Cache-Control':'no-cache','Connection':'close'}});
-      await guard();
-      const sample={error:r.error||null,status:r.status||0,ms:r.ms};lightSamples.push(sample);
-      if(!lightValid(sample))break;
-    }
-    return lightSamples;
-  },async p=>{progress.lightConcurrency=p.concurrency;progress.lightScreen=p.stats;await update(p.rechecking?'轻量初筛降载复核':'低流量连通与延迟初筛',p.done,p.total);});
-  const reachable=light.rows;
-  assert(reachable.length>=10,'可连接候选不足 10 个，保留原订阅');
-  const downloadEntries=pickDownloads(reachable,baseline.entries,opts.limit,env.random);
+  const light=await selectiveLightScreen(entries,baseline.entries,opts.limit,LIGHT_SCREEN[opts.mode],async(e,pass)=>{
+    await guard();progress.lightRequests++;
+    const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'HEAD',
+      url:'http://www.gstatic.com/generate_204?cf_rank_light='+runId+'-p'+pass+'-'+env.id(),timeout:LIGHT_SCREEN[opts.mode].timeout,
+      headers:{'Cache-Control':'no-cache','Connection':'close'}});
+    await guard();return {error:r.error||null,status:r.status||0,ms:r.ms};
+  },async p=>{
+    progress.lightConcurrency=p.concurrency;progress.lightScreen=p.stats;
+    await update(p.phase.startsWith('second-')?'轻量候选二次复核':p.rechecking?'轻量初筛降载复核':'低流量连通与延迟初筛',p.done,p.total);
+  },env.random);
+  assert(light.stats.secondPassed>=10,'可连接候选不足 10 个，保留原订阅');
+  const downloadEntries=light.downloads;
   assert(downloadEntries.length>=10,'有效下载候选不足 10 个，保留原订阅');
   progress.downloadCandidateCount=downloadEntries.length;
   async function download(e,size,seconds) {
@@ -643,7 +761,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(sameEntries(await raw(fresh.cfg),baseline.entries),'测速期间实际订阅已改变，跳过发布');
   await guard();
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
-  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
+  const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:light.stats.secondPassed,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
   outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
@@ -749,7 +867,7 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,execute,renameOnly};
+const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);
 
@@ -872,18 +990,27 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.18 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.19 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
+  const light=s.lightScreen||s.result&&s.result.lightScreen;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
     const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','YouTube Premium 检测':'Premium 预检','轻量初筛降载复核':'降载复核','稳定性检查':'稳定性检查','双次下载复测':'双次复测','后备稳定性检查':'补选稳定性','YouTube Premium 发布前复核':'Premium 复核','后备 Premium 检测':'后备 Premium','后备节点速度复测':'补选复测','更新 Premium 检测记录':'更新 Premium','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
-    Object.assign(names,{'Premium 与稳定性检查':'预检与稳定性','后备 Premium 与稳定性检查':'后备预检与稳定性','下载复测首轮':'首轮复测','下载复测决选':'决选复测','出口与 Premium 最终复核':'出口与 Premium 复核'});
-    const stage=(names[s.stage]||s.stage)+(s.total?' '+(s.done||0)+'/'+s.total:'');
+    Object.assign(names,{'Premium 与稳定性检查':'预检与稳定性','后备 Premium 与稳定性检查':'后备预检与稳定性','下载复测首轮':'首轮复测','下载复测决选':'决选复测','出口与 Premium 最终复核':'出口与 Premium 复核','轻量候选二次复核':'必要二检'});
+    if(light&&Number.isInteger(light.firstTested))names['低流量连通与延迟初筛']='轻量首检';
+    const secondPhase=s.stage==='轻量候选二次复核'&&light&&Number.isInteger(light.firstTested);
+    const stage=(names[s.stage]||s.stage)+(secondPhase?' · 请求 '+light.secondRequests+' 次':s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
     if(s.cancelRequested)return '已请求取消 · '+stage+'\n'+traffic+' · 等待当前请求结束';
     if(s.backendRetry)return stage+'\n'+s.backendRetry+' · '+traffic;
+    if(light&&Number.isInteger(light.firstTested)){
+      if(s.stage==='低流量连通与延迟初筛')return '轻量首检 '+light.firstTested+'/'+light.firstTotal+'\n首检合格 '+light.firstPassed+' 个 IP · 并发 '+(s.lightConcurrency||8);
+      if(s.stage==='轻量候选二次复核')return stage+'\n双检合格 '+light.secondPassed+' 个 IP · 首检覆盖 '+light.firstTested;
+      if(s.stage==='轻量初筛降载复核')return stage+'\n首检覆盖 '+light.firstTested+'/'+light.firstTotal+' · 并发 '+(s.lightConcurrency||8);
+      if(s.stage==='下载初筛'&&light.selectionComplete)return stage+poolNote+'\n二检 '+light.secondTested+' 次 · 省 '+light.skippedSecond+' 次 · '+traffic;
+    }
     if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
     if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
     if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;
@@ -929,7 +1056,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.18';
+const UA='CF-Edge-AutoRank/0.1.19';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -1001,6 +1128,11 @@ function statusText(s){
   const timings=s.result&&s.result.stageTimings||s.stageTimings;
   if(timings)lines.push('各阶段耗时：'+Object.entries(timings).filter(([,ms])=>ms>=1000).map(([stage,ms])=>stage+' '+Math.round(ms/1000)+'秒').join(' · '));
   const light=s.result&&s.result.lightScreen||s.lightScreen;
+  if(light&&Number.isInteger(light.firstTested)){
+    lines.push('轻量首检：覆盖 '+light.firstTested+'/'+light.firstTotal+' 个入口 · 首检合格 '+light.firstPassed+' 个 IP');
+    lines.push('轻量二检：请求 '+light.secondRequests+' 次 · 已完成 '+light.secondTested+' 次 · 确认 '+light.secondPassed+' 个 IP 双检合格 · '+(light.selectionComplete?'省略 '+light.skippedSecond+' 次':'尚未完成，省略数量未结算'));
+    lines.push('轻量请求：首检 '+light.firstRequests+' 次（含降载复检） · 二检 '+light.secondRequests+' 次');
+  }
   if(light)lines.push('轻量检测：最高并发 '+light.maxConcurrency+' · 降载 '+light.backoffs+' 次 · 复核 '+light.rechecked+' 个');
   const refinement=s.result&&s.result.refinement||s.refinement;
   if(refinement)lines.push('下载复测：省去第二遍 '+refinement.savedSecondSamples+' 次（首遍无效 '+(refinement.skippedInvalidFirst+refinement.reserveSkippedInvalidFirst)+' · 已无法入选 '+refinement.skippedByBound+'）');
@@ -1175,7 +1307,10 @@ try {
   result.stageTimings={...preludeTimings,...result.stageTimings};
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
-  const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
+  const coverage=result.lightScreen&&Number.isInteger(result.lightScreen.firstTested)?
+    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个进入下载初筛':
+    '本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选';
+  const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n'+coverage+'；'+complete+'/20 次下载复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
   ownedWrite({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});

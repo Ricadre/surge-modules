@@ -42,15 +42,18 @@ function simulated(options={}) {
  };
  return {...f,time,events,metrics:()=>({active,fullActive,maxActive,peakFull,overlaps,peaks})};
 }
-function baseline() {
- const text=fs.readFileSync(path.join(__dirname,'../../scripts/CF-AutoRank-0.1.15.js'),'utf8');
+function baseline(version='0.1.15') {
+ const text=fs.readFileSync(path.join(__dirname,'../../scripts/CF-AutoRank-'+version+'.js'),'utf8');
  const context=vm.createContext({});vm.runInContext(text.slice(0,text.lastIndexOf('(async function () {')),context);
  return context.CFRankCore;
 }
-test('same synthetic pool retains top-ten quality while reducing scheduled wall time',async t=>{
+// Historical 0.1.16 scheduling comparison stays frozen: later releases change
+// light selection and its random exploration order. Current-flow invariants
+// are exercised below and in light-integration/selective-light tests.
+test('published 0.1.16 scheduling retains the frozen 0.1.15 synthetic top ten',async t=>{
  for(const scenario of ['healthy','mixed','congested']) {
   const old=simulated({mixed:scenario==='mixed',congested:scenario==='congested'}),next=simulated({mixed:scenario==='mixed',congested:scenario==='congested'});
-  const a=await baseline().execute(old.env,old.opts,pools),b=await C.execute(next.env,next.opts,pools);
+  const a=await baseline().execute(old.env,old.opts,pools),b=structuredClone(await baseline('0.1.16').execute(next.env,next.opts,pools));
   assert(a.verified&&b.verified);
   assert.deepEqual(Array.from(a.downloadCandidates,e=>e.key),b.downloadCandidates.map(e=>e.key));
   assert.deepEqual(Array.from(a.selected,e=>e.key),b.selected.map(e=>e.key));

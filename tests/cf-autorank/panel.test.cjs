@@ -84,3 +84,36 @@ test('bounded Premium recovery stays in the existing progress card without claim
  assert.equal(card.content.split('\n').length,2);assert(!card.content.includes('已核对'));
  assert(!U.view('main',{...state,lastSuccess:history},now,'lite').content.includes('恢复'));
 });
+test('initial coverage and necessary second checks are shown as separate counts in the existing panel',()=>{
+ const light={firstTotal:1280,firstTested:128,firstPassed:120,firstRequests:128,secondTested:0,secondPassed:0,secondRequests:0,skippedSecond:0,selectionComplete:false};
+ const state={running:true,stage:'低流量连通与延迟初筛',done:128,total:1280,startedAt:now-30000,updatedAt:now,bytes:0,lightConcurrency:16,lightScreen:light};
+ const first=U.view('status',state,now,'lite');
+ assert.equal(first.content,'轻量首检 128/1280\n首检合格 120 个 IP · 并发 16');
+ const second=U.view('status',{...state,stage:'轻量候选二次复核',done:32,total:1200,
+  lightScreen:{...light,firstTested:1280,firstPassed:1200,secondTested:32,secondPassed:30,secondRequests:32}},now,'lite');
+ assert.equal(second.content,'必要二检 · 请求 32 次\n双检合格 30 个 IP · 首检覆盖 1280');
+ assert(!second.content.includes('省 '));assert(!second.content.includes('1280 个 IP'));
+ for(const view of [first,second])assert.equal(view.content.split('\n').length,2);
+ assert.equal(first.title,'Cloudflare 测速进度');assert.equal(second.title,'Cloudflare 测速进度');
+});
+test('download stage reports settled second-check savings without changing final completion details',()=>{
+ const state={running:true,stage:'下载初筛',done:80,total:160,startedAt:now-30000,updatedAt:now,bytes:10000000,
+  lightScreen:{firstTotal:1280,firstTested:1280,firstPassed:1100,firstRequests:1280,secondTested:180,secondPassed:170,secondRequests:180,skippedSecond:920,selectionComplete:true}};
+ const running=U.view('status',state,now,'lite');
+ assert.equal(running.content,'下载初筛 80/160\n二检 180 次 · 省 920 次 · 10 MB');
+ const done=U.view('status',{...state,running:false,stage:'完成',premium:{verified:10,bytes:0},result:{selected:Array(10).fill({})}},now,'lite');
+ assert.match(done.content,/Premium 10\/10/);assert.match(done.content,/30秒 · 10 MB · 请刷新订阅/);
+ assert.equal(done.content.split('\n').length,2);
+});
+test('second-check cancellation and downshift retain truthful scope and old records still render',()=>{
+ const light={firstTotal:1280,firstTested:1280,firstPassed:1200,secondTested:32,secondRequests:32,secondPassed:30,skippedSecond:0,selectionComplete:false};
+ const state={running:true,stage:'轻量候选二次复核',done:32,total:1200,startedAt:now-30000,updatedAt:now,lightScreen:light};
+ const cancelled=U.view('status',{...state,cancelRequested:true},now,'lite');
+ assert.match(cancelled.content,/已请求取消 · 必要二检/);assert(!cancelled.content.includes('省 '));
+ const backoff=U.view('status',{...state,stage:'轻量初筛降载复核',done:12,total:64,lightConcurrency:8,
+  lightScreen:{...light,firstTested:128}},now,'lite');
+ assert.equal(backoff.content,'降载复核 12/64\n首检覆盖 128/1280 · 并发 8');
+ const legacy=U.view('status',{...state,stage:'低流量连通与延迟初筛',done:128,total:1280,lightScreen:{maxConcurrency:16,backoffs:0,rechecked:0},lightConcurrency:16},now,'lite');
+ assert.match(legacy.content,/轻量初筛 128\/1280/);assert(!legacy.content.includes('undefined'));
+ assert.match(U.view('status',{},now,'lite').content,/v0\.1\.19 已加载/);
+});

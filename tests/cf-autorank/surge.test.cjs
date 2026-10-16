@@ -76,7 +76,11 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(verified.result.candidateSources.official,953);
  assert.equal(verified.result.candidateSources.legacy,317);
  assert.equal(verified.result.candidateCount,1280);assert.equal(verified.result.downloadCandidateCount,40);
- const light=r.requests.filter(x=>x.url.includes('cf_rank_light='));assert.equal(light.length,2560);
+ const light=r.requests.filter(x=>x.url.includes('cf_rank_light=')),screen=verified.result.lightScreen;
+ assert.equal(screen.firstTested,1280);assert.equal(screen.firstTotal,1280);
+ assert.equal(light.length,screen.firstRequests+screen.secondRequests);assert.equal(light.length,verified.result.lightRequests);
+ assert.equal(screen.secondTested,screen.secondRequests);assert.equal(screen.secondTested+screen.skippedSecond,screen.firstPassedEntries);
+ assert(screen.selectionComplete);assert(screen.secondPassed>=verified.result.downloadCandidateCount);
  assert(light.every(x=>x.method==='HEAD'&&x.descriptor&&!x.policy));
 });
 test('Premium failure never updates backend and preserves the previous successful record',async()=>{
@@ -140,7 +144,7 @@ test('returning to status reads the saved in-flight progress without credentials
   if(options['policy-descriptor']&&!check)check=run('status|example.net|lite|40|','auto-interval',{}, {sharedStore:store});
  }});
  const status=await check;
- assert.equal(status.requests.length,0);assert.match(status.output.content,/轻量初筛/);
+ assert.equal(status.requests.length,0);assert.match(status.output.content,/轻量(?:初筛|首检)/);
  assert.equal(status.output.title,'Cloudflare 测速进度');assert.equal(r.writes.length,1);
 });
 test('a failed later run preserves last success time and network for the overview',async()=>{
@@ -209,7 +213,8 @@ test('transient pre-publication backend read retries directly without repeating 
  }});
  assert(failed);assert.equal(r.writes.length,1);
  const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.result.verified,true);
- assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,2560);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,state.result.lightRequests);
+ assert.equal(state.result.lightScreen.firstTested,1280);
  assert(r.requests.filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy==='DIRECT'&&!x.descriptor));
  assert(r.logs.some(x=>x.includes('读取后台配置 · 重试 2/3')));
  assert(!r.logs.join('\n').includes('private diagnostic'));
@@ -345,7 +350,9 @@ test('transport failure during final backend read switches route without restart
   if(!failed&&options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){failed=true;return {error:'connection reset'};}
  }});
  assert(failed);assert.equal(r.writes.length,1);assert(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified);
- assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,2560);
+ const state=JSON.parse(r.store['CFEdgeRank_example.net']);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,state.result.lightRequests);
+ assert.equal(state.result.lightScreen.firstTested,1280);
  assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,58);
  assert(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).every(x=>x.policy===undefined));
 });
@@ -530,5 +537,61 @@ test('diagnostic formatter allowlists fields and never echoes unknown reason str
   httpStatus:privateData,networkError:privateData,regions:['US',privateData],oldestAgeMs:privateData,endpoint:privateData,headers:privateData,html:privateData}]};
  const r=await run('status|example.net|lite|40|','button',{[key]:JSON.stringify(state)});
  const text=JSON.stringify([r.logs,r.output]);assert.match(text,/原因未确认/);assert.match(text,/地区 US/);assert(!text.includes(privateData));
+ assert.equal(r.requests.length,0);
+});
+
+test('successful summary distinguishes full first-check coverage from the selectively confirmed subset',async()=>{
+ const clock=fixedClock();
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock,onRequest:({options})=>{
+  if(options.url.includes('cf_rank_light=')){
+   const ip=/CF-Probe-(\d+\.\d+\.\d+\.\d+)-/.exec(options['policy-descriptor'])[1];
+   clock.advance(10+ip.split('.').reduce((n,x)=>n*31+Number(x),0)%200);
+  }
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']),light=s.result.lightScreen,n=r.notifications.at(-1);
+ assert(s.result.verified);assert.equal(light.firstTested,1280);assert.equal(light.firstPassed,1280);
+ assert(light.secondTested<light.firstPassedEntries);assert(light.secondPassed>=40);assert(light.skippedSecond>0);
+ assert.equal(s.result.reachable,light.secondPassed);assert.equal(light.secondTested+light.skippedSecond,light.firstPassedEntries);
+ assert.match(n.options.text,/轻量首检：覆盖 1280\/1280 个入口 · 首检合格 1280 个 IP/);
+ assert(n.options.text.includes('轻量二检：请求 '+light.secondRequests+' 次 · 已完成 '+light.secondTested+' 次 · 确认 '+light.secondPassed+' 个 IP 双检合格 · 省略 '+light.skippedSecond+' 次'));
+ assert(n.options.text.includes('轻量请求：首检 '+light.firstRequests+' 次（含降载复检） · 二检 '+light.secondRequests+' 次'));
+ assert(n.options.text.includes(light.secondPassed+' 个 IP 已确认双检合格，40 个进入下载初筛'));
+ assert(!n.options.text.includes('1280 个通过'));assert(!n.options.text.includes('1280 个可用'));
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,light.firstRequests+light.secondRequests);
+});
+test('cancelling during necessary second checks copies completed first coverage without claiming unmeasured savings',async()=>{
+ const key='CFEdgeRank_example.net';let cancelled=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock:fixedClock(),onRequest:({options,store})=>{
+  const state=JSON.parse(store[key]);
+  if(!cancelled&&options.url.includes('cf_rank_light=')&&state.stage==='轻量候选二次复核'){
+   cancelled=true;store[key]=JSON.stringify({...state,cancelRequested:true});
+  }
+ }});
+ const s=JSON.parse(r.store[key]),light=s.lightScreen,n=r.notifications.at(-1);
+ assert(cancelled);assert.equal(r.writes.length,0);assert.equal(s.cancelRequested,true);
+ assert.equal(s.failureStage,'轻量候选二次复核');assert.equal(light.firstTested,1280);
+ assert(light.secondRequests>0);assert.equal(light.secondTested,0);assert.equal(light.selectionComplete,false);assert.equal(light.skippedSecond,0);
+ assert(n.options.text.includes('轻量二检：请求 '+light.secondRequests+' 次 · 已完成 0 次'));
+ assert.match(n.options.text,/轻量首检：覆盖 1280\/1280/);assert.match(n.options.text,/尚未完成，省略数量未结算/);
+ assert(!/轻量二检：[^\n]+省略 \d+ 次/.test(n.options.text));assert.match(n.options.text,/已取消/);
+});
+test('network change during necessary second checks stops before downloads and preserves correct failure scope',async()=>{
+ const key='CFEdgeRank_example.net',network={wifi:{ssid:'Synthetic first'}};let changed=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {clock:fixedClock(),network,onRequest:({options,store})=>{
+  if(!changed&&options.url.includes('cf_rank_light=')&&JSON.parse(store[key]).stage==='轻量候选二次复核'){
+   changed=true;network.wifi.ssid='Synthetic second';
+  }
+ }});
+ const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
+ assert(changed);assert.equal(r.writes.length,0);assert.equal(s.failureStage,'轻量候选二次复核');
+ assert.equal(s.lightScreen.firstTested,1280);assert.equal(s.lightScreen.selectionComplete,false);
+ assert(!r.requests.some(x=>x.url.includes('cf_rank=')&&!x.url.includes('cf_rank_light=')));
+ assert.match(n.options.text,/网络变化/);assert.match(n.options.text,/尚未完成，省略数量未结算/);
+});
+test('old stored light-screen summaries remain readable without invented first or second counts',async()=>{
+ const key='CFEdgeRank_example.net';
+ const r=await run('status|example.net|lite|40|','button',{[key]:JSON.stringify({stage:'未完成',message:'检测未通过',lightScreen:{maxConcurrency:16,backoffs:1,rechecked:64}})});
+ const text=r.logs.join('\n');assert.match(text,/轻量检测：最高并发 16 · 降载 1 次 · 复核 64 个/);
+ assert(!text.includes('轻量首检：'));assert(!text.includes('轻量二检：'));assert(!text.includes('undefined'));assert(!text.includes('NaN'));
  assert.equal(r.requests.length,0);
 });

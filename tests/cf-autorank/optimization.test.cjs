@@ -17,8 +17,8 @@ function virtualClock() {
  });}
  return {now:()=>now,wait:ms=>new Promise(resolve=>{queue.push({at:now+ms,resolve});pump();})};
 }
-function previousCore() {
- const text=fs.readFileSync(path.join(__dirname,'../../scripts/CF-AutoRank-0.1.16.js'),'utf8');
+function previousCore(version='0.1.16') {
+ const text=fs.readFileSync(path.join(__dirname,'../../scripts/CF-AutoRank-'+version+'.js'),'utf8');
  const context=vm.createContext({});vm.runInContext(text.slice(0,text.lastIndexOf('(async function () {')),context);
  return context.CFRankCore;
 }
@@ -90,15 +90,18 @@ function quality(result,f) {
  assert(Object.values(result.stageTimings).every(ms=>Number.isFinite(ms)&&ms>=0));
  assert.equal(Object.values(result.stageTimings).reduce((a,b)=>a+b,0),result.finishedAt-result.startedAt);
 }
+// Keep the published 0.1.17 download scheduling comparison reproducible.
+// Selective light checks use a different uniform exploration order from 0.1.19;
+// their reference selection and full current flow have separate regression tests.
 async function compare(options,t,label) {
  const old=simulation(options),next=simulation(options);
- const a=await previousCore().execute(old.env,old.opts,pools),b=await C.execute(next.env,next.opts,pools);
+ const a=await previousCore().execute(old.env,old.opts,pools),b=structuredClone(await previousCore('0.1.17').execute(next.env,next.opts,pools));
  quality(b,next);
  assert.deepEqual(Array.from(a.downloadCandidates,e=>e.key),b.downloadCandidates.map(e=>e.key));
  assert.deepEqual(Array.from(a.selected,e=>e.key),b.selected.map(e=>e.key));
  assert.deepEqual(Array.from(a.selected,e=>e.score),b.selected.map(e=>e.score));
  assert.deepEqual(Array.from(a.selected,e=>Array.from(e.samples,s=>s.mbps)),b.selected.map(e=>e.samples.map(s=>s.mbps)));
- if(t)t.diagnostic(JSON.stringify({scenario:label,baseline:'0.1.16',oldSeconds:(a.finishedAt-a.startedAt)/1000,newSeconds:(b.finishedAt-b.startedAt)/1000,oldSampleMB:a.bytes/1e6,newSampleMB:b.bytes/1e6,oldFullRequests:old.events.filter(e=>e.kind==='full').length,newFullRequests:next.events.filter(e=>e.kind==='full').length,sameTopTen:true}));
+ if(t)t.diagnostic(JSON.stringify({scenario:label,baseline:'0.1.16',optimized:'0.1.17',oldSeconds:(a.finishedAt-a.startedAt)/1000,newSeconds:(b.finishedAt-b.startedAt)/1000,oldSampleMB:a.bytes/1e6,newSampleMB:b.bytes/1e6,oldFullRequests:old.events.filter(e=>e.kind==='full').length,newFullRequests:next.events.filter(e=>e.kind==='full').length,sameTopTen:true}));
  return {a,b,old,next};
 }
 test('two-pass bounded retest preserves the frozen 0.1.16 top ten with cheaper synthetic scheduling',async t=>{
