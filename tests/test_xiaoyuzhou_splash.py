@@ -18,7 +18,7 @@ for line in module.splitlines():
     else:
         sections[section].append(line)
 
-assert set(sections) == {'[Map Local]', '[MITM]'}
+assert set(sections) == {'[Map Local]', '[Body Rewrite]', '[MITM]'}
 rule, = sections['[Map Local]']
 pattern, parameters = rule.split(' ', 1)
 base = 'https://api.xiaoyuzhoufm.com'

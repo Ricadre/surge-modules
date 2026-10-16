@@ -1,29 +1,38 @@
-小宇宙开屏广告过滤（测试版）0.1.1
+小宇宙广告过滤（测试版）0.2.0
 
 远程地址
 https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule
 
 范围与实现
-仅匹配 https://api.xiaoyuzhoufm.com/v1/flash-screen/list，支持末尾斜杠和查询参数。
-使用 Surge Map Local 返回 HTTP 200、Content-Type: application/json 和空对象 {}。
+仅匹配 api.xiaoyuzhoufm.com 的以下两个完整路径，支持末尾斜杠和查询参数：
+1. /v1/flash-screen/list：使用 Map Local 返回 HTTP 200、application/json 和空对象 {}。
+2. /v1/discovery-feed/list：使用内置 JQ 处理 DISCOVERY_BANNER 的 data 数组，
+   只删除 presetPurpose 等于 OPERATIONAL，或 showAdIndicator 严格等于 true 的条目。
+   过滤后为空的横幅区块一并移除；未标记的横幅、未知结构及分页字段保留。
 不请求外部脚本，不封锁整个域名，不改写其他版本或名称相似的接口。
-未加入公开合集的首页推荐、搜索提示、分类、AI 总结等净化规则。
+保留首页顶部入口、为你推荐、编辑精选、榜单、新节目、分类和加载更多。
+不会因节目属于付费内容、标题包含“商业”或使用横幅布局就将其视为广告。
+未加入搜索提示、相关单集、分类、会员或 AI 总结等接口的清空规则。
 不会修改订阅、节目、单集、账号或音频文件的请求响应。
 MITM 只追加 api.xiaoyuzhoufm.com；该主机的其他 HTTPS 请求也会经过解密，
-但只有上述开屏路径会被本模块替换。规则范围检查不代表所有 App 功能已实测。
+但只有上述两个路径会被本模块处理。规则范围检查不代表所有 App 功能已实测。
 
 安装与使用
-在 Surge 的模块页面通过上述 Raw 地址安装，确认版本 0.1.1，并勾选启用。
-需要 Surge iOS 5.9.1+、开启重写与 MITM，且 Surge 证书已安装并完全信任。
+在 Surge 的模块页面通过上述 Raw 地址安装或更新，确认版本 0.2.0，并勾选启用。
+原开屏模块的远程文件名保持不变，无需重复安装第二个模块。
+需要 Surge iOS 5.14+、开启重写与 MITM，且 Surge 证书已安装并完全信任。
 避免同时启用其他处理小宇宙开屏的重写规则，以免无法判断实际生效来源。
 安装后彻底退出并重开小宇宙；已缓存的广告可能要联网刷新后再次启动才消失。
 不必清除 App 数据、卸载重装或重新登录。日常使用无需开启流量捕获。
 
 验证方法与限制
-接口线索来自公开规则，匹配范围限定为 v1/flash-screen/list。
-使用合成 URL 检查开屏路径与普通功能路径的边界，使用 Surge 模块解析器检查格式。
+使用合成 URL 检查两个路径与普通功能路径的边界，使用 Surge 模块解析器检查格式。
+首页测试覆盖混合横幅、普通推荐、未知结构、分页信息和重复执行的一致性。
+在目标设备检查请求日志的 Map Local／Body Rewrite 命中，再核对首页、订阅和播放。
+未带上述标记的推广不会被猜测性删除；规则不处理节目音频中主播口播的广告。
 缓存可能延迟效果；不同 App 版本、发现页、订阅和音频播放应在目标设备分别检查。
 验证命令：python3 tests/test_xiaoyuzhou_splash.py
+          python3 tests/test_xiaoyuzhou_home.py
 
 恢复
 如果出现加载问题，在 Surge 中停用本模块并彻底退出、重开小宇宙。
@@ -40,3 +49,7 @@ MITM 只追加 api.xiaoyuzhoufm.com；该主机的其他 HTTPS 请求也会经�
   https://t.me/s/aa28413761?before=1816
 - Surge Map Local 语法、最低版本和 MITM 要求：
   https://manual.nssurge.com/http/map-local.html
+- Surge 原生 JQ Body Rewrite 语法、最低版本和响应大小限制：
+  https://manual.nssurge.com/http/body-rewrite.html
+- 首页公开规则可作为接口线索；本模块不直接删除整个 DISCOVERY_HEADER 或所有横幅：
+  https://github.com/fmz200/wool_scripts/blob/main/Loon/plugin/blockAds.plugin
