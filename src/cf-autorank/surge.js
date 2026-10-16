@@ -3,12 +3,12 @@
 const core = CFRankCore;
 const ui = CFPanelUI;
 const poolSource=CFPoolSource;
-let poolInfo=null;
+let poolInfo=null,backendRoute='direct';
 let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.14';
+const UA='CF-Edge-AutoRank/0.1.15';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}
@@ -36,6 +36,7 @@ function statusText(s){
   const supplement=s.supplement||s.result&&s.result.supplement;
   if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
   if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+'/10');
+  if(s.backendRoute)lines.push('后台请求路径：'+(s.backendRoute==='rules'?'按现有 Surge 规则':'DIRECT'));
   if(s.updatedAt)lines.push('更新：'+new Date(s.updatedAt).toLocaleString());
   if(s.network)lines.push('本轮网络：'+ui.networkText(s.network));
   if(s.poolInfo)lines.push('候选池：'+poolSource.label(s.poolInfo)+(s.poolInfo.fetchedAt?' · 获取于 '+ui.dateText(s.poolInfo.fetchedAt):''));
@@ -69,23 +70,32 @@ try {
   const history=ui.lastSuccess(previous);
   if(opts.action==='start'||opts.action==='rename'){
     ownerId=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);ownsRun=true;
-    write({running:true,ownerId,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,network,lastSuccess:history,bytes:0,cancelRequested:false});
+    write({running:true,ownerId,startedAt:started,updatedAt:started,stage:'正在登录后台',mode:opts.mode,network,backendRoute,lastSuccess:history,bytes:0,cancelRequested:false});
   }
   const origin='https://'+opts.host;
   const networkKey=()=>{const n=typeof $network==='object'?$network:localNetwork;return JSON.stringify([n.wifi&&n.wifi.ssid,n.v4&&n.v4.primaryInterface,n.v4&&n.v4.primaryAddress]);};
   const controlNetwork=networkKey();
   function controlGuard(){requireOwner();if(networkKey()!==controlNetwork)throw new Error('检测到网络变化，本轮结果已丢弃');}
-  const retryable=r=>!!r.error||r.status===408||r.status===429||r.status>=500&&r.status<=599;
-  function controlError(label,r,attempt,method){
+  const retryable=r=>!!r.error||!r.status||r.status===408||r.status===429||r.status>=500&&r.status<=599;
+  function controlError(label,r,attempt,method,route=backendRoute){
     const reason=r.error==='timeout'?'请求超时':r.error?'连接失败':r.status?'HTTP '+r.status:'未收到响应';
-    const error=new Error(label+'失败（'+reason+'，已尝试 '+attempt+' 次）');
+    const error=new Error(label+'失败（'+reason+'，已尝试 '+attempt+' 次；'+(route==='rules'?'按现有规则':'DIRECT')+'）');
     // Store only allowlisted labels and codes, never the URL, body or raw error.
-    error.controlFailure={label,status:r.status||0,reason,attempt,uncertain:method==='POST'&&retryable(r)};
+    error.controlFailure={label,status:r.status||0,reason,attempt,route,uncertain:method==='POST'&&retryable(r)};
     return error;
+  }
+  function backendOptions(){return backendRoute==='direct'?{policy:'DIRECT'}:{};}
+  function fallbackBackend(r){
+    // Only transport failures change the management path. Never redirect a
+    // speed/Premium probe or override the user's selected policies/settings.
+    if(backendRoute!=='direct'||(!r.error&&r.status))return;
+    controlGuard();backendRoute='rules';
+    console.log('后台直连连接失败，后续管理请求按现有 Surge 规则；测速路径不变');
+    if(isOwner())write({...read(),backendRoute,updatedAt:Date.now()});
   }
   async function retryWait(label,nextAttempt){
     controlGuard();
-    const note=label+' · 重试 '+nextAttempt+'/3';
+    const note=label+' · 重试 '+nextAttempt+'/3'+(backendRoute==='rules'?' · 按现有规则':'');
     console.log(note);
     if(isOwner())write({...read(),backendRetry:note,updatedAt:Date.now()});
     await new Promise(resolve=>setTimeout(resolve,nextAttempt===2?1000:3000));
@@ -115,7 +125,8 @@ try {
     for(let attempt=1;attempt<=attempts;attempt++){
       controlGuard();
       const url=origin+path+(path.includes('?')?'&':'?')+'cf_rank_read='+Date.now()+'-'+attempt;
-      const r=await request({url,body,policy:'DIRECT',timeout:35,'auto-cookie':true,'auto-redirect':false,
+      const route=backendRoute;
+      const r=await request({url,body,...backendOptions(),timeout:35,'auto-cookie':true,'auto-redirect':false,
         headers:{'User-Agent':UA,'Cache-Control':'no-cache','Content-Type':'text/plain;charset=utf-8'}},method);
       controlGuard();
       if(!r.error&&r.status===200){
@@ -131,22 +142,26 @@ try {
         reauthenticated=true;console.log(label+' · 重新登录一次');
         await login(opts.host,opts.password);continue;
       }
-      if(attempt<attempts&&retryable(r)){await retryWait(label,attempt+1);continue;}
-      throw controlError(label,r,attempt,method);
+      if(attempt<attempts&&retryable(r)){fallbackBackend(r);await retryWait(label,attempt+1);continue;}
+      // A save may have succeeded even if its response was lost. Select the
+      // fallback for readback, but leave POST reconciliation to the core.
+      if(method==='POST'&&retryable(r))fallbackBackend(r);
+      throw controlError(label,r,attempt,method,route);
     }
   }
   async function login(host,password){
     for(let attempt=1;attempt<=3;attempt++){
       controlGuard();
-      const r=await request({url:origin+'/login',body:'password='+encodeURIComponent(password),policy:'DIRECT',timeout:20,
+      const route=backendRoute;
+      const r=await request({url:origin+'/login',body:'password='+encodeURIComponent(password),...backendOptions(),timeout:20,
         'auto-cookie':true,'auto-redirect':false,headers:{'User-Agent':UA,'Content-Type':'application/x-www-form-urlencoded'}},'POST');
       controlGuard();
       if(!r.error&&[200,302].includes(r.status)){
         if(r.status===200){let data;try{data=JSON.parse(r.data);}catch(_){throw new Error('后台密码未被接受，请在模块参数检查');}if(!data.success)throw new Error('后台登录未成功');}
         clearRetry();return;
       }
-      if(attempt<3&&retryable(r)){await retryWait('登录后台',attempt+1);continue;}
-      throw controlError('登录后台',r,attempt,'GET');
+      if(attempt<3&&retryable(r)){fallbackBackend(r);await retryWait('登录后台',attempt+1);continue;}
+      throw controlError('登录后台',r,attempt,'GET',route);
     }
   }
   if(opts.action==='verify') {
@@ -169,7 +184,7 @@ try {
     probe:async spec=>request({url:spec.url,'policy-descriptor':spec.descriptor,timeout:spec.timeout,
       'binary-mode':!!spec.binary,'auto-cookie':false,'auto-redirect':false,headers:spec.headers},spec.method),
     cancelled:async()=>!isOwner()||!!read().cancelRequested,
-    progress:async p=>{requireOwner();const old=read();write({...p,ownerId,network,poolInfo,lastSuccess:history,running:true,cancelRequested:!!old.cancelRequested});
+    progress:async p=>{requireOwner();const old=read();write({...p,ownerId,network,poolInfo,backendRoute,lastSuccess:history,running:true,cancelRequested:!!old.cancelRequested});
       if(p.stage!==lastStage||p.done-lastLogged>=10||p.done===p.total){console.log(p.stage+' '+p.done+'/'+p.total+'，约 '+(p.bytes/1000000).toFixed(1)+' MB');lastStage=p.stage;lastLogged=p.done;}},
     backup:async value=>{requireOwner();if(!$persistentStore.write(JSON.stringify(value),stateKey+'_backup'))throw new Error('无法备份原列表，停止发布');}
   };
@@ -177,7 +192,7 @@ try {
     const renamed=await core.renameOnly(env,opts,CF_RANK_POOLS);requireOwner();
     const known=renamed.selected.filter(e=>e.egress&&e.egress.country).length;
     const message='10 个名称已核对，'+known+' 个出口国家已识别，'+(10-known)+' 个未知以 🌐 标记。IP、端口和顺序未变。请刷新原订阅。';
-    write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
+    write({running:false,ownerId,startedAt:started,stage:'名称已核对',mode:opts.mode,network,backendRoute,lastSuccess:history,updatedAt:Date.now(),bytes:0,nameResult:renamed,message});
     done('Cloudflare 节点名称已核对',message,false,true);return;
   }
   const result=await core.execute(env,opts,CF_RANK_POOLS,poolInfo);
@@ -186,7 +201,7 @@ try {
   const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选；'+complete+'/20 次复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
   const lastSuccess={at:finishedAt,network,mode:opts.mode,count:result.selected.length,bytes:result.bytes,premiumBytes:result.premium.bytes,premiumVerified:result.premium.verified,changed:result.changed,elapsedMs:finishedAt-started};
-  write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
+  write({running:false,ownerId,startedAt:started,stage:'完成',mode:opts.mode,network,poolInfo,backendRoute,lastSuccess,updatedAt:finishedAt,bytes:result.bytes,result,message});
   done('Cloudflare 优选完成 · '+(result.changed?'已更新':'无变化'),statusText(read()),false,true);
 } catch(error) {
   const message=String(error.message||'未知错误');

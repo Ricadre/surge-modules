@@ -46,7 +46,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.14 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.15 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';

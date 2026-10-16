@@ -14,7 +14,7 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
   if(fault){callback(fault.error||null,{status:fault.status||0,headers:fault.headers||{}},fault.data||'');return;}
   let data='',status=200,headers={};
   if(options.url.startsWith('https://example.net/')){
-   assert.equal(options.policy,'DIRECT');assert.equal(options['auto-redirect'],false);assert.equal(options['auto-cookie'],true);
+   assert([undefined,'DIRECT'].includes(options.policy));assert.equal(options['policy-descriptor'],undefined);assert.equal(options.insecure,undefined);assert.equal(options['auto-redirect'],false);assert.equal(options['auto-cookie'],true);
    const url=new URL(options.url);
    if(url.pathname==='/login'){assert.equal(method,'POST');assert.equal(options.body,'password=local-secret');data=JSON.stringify({success:true});}
    else if(url.pathname==='/admin/config.json'){assert.equal(method,'GET');data=JSON.stringify(config);}
@@ -57,6 +57,7 @@ test('automatic panel refresh never runs paid traffic or writes',async()=>{const
 test('adapter full mock uses only direct backend and explicit temporary CF policies',async()=>{
  const r=await run('start|example.net|lite|40|local-secret');
  assert.equal(r.output.icon,'cloud.fill');assert.equal(r.output.style,undefined);assert.equal(r.writes.length,1);assert.equal(r.writes[0].split('\n').length,10);assert.equal(r.doneCount,1);
+ assert(r.requests.filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy==='DIRECT'));
  assert(r.requests.some(x=>x.descriptor));assert(r.requests.every(x=>x.method==='GET'||x.method==='HEAD'||/\/login|\/admin\/ADD.txt/.test(x.url)));
  assert(!JSON.stringify(r.logs).includes('local-secret'));assert(!JSON.stringify(r.store).includes('local-secret'));assert(!JSON.stringify(r.store).includes('11111111-1111-4111-8111-111111111111'));
  assert.match(r.output.content,/上次更新 .*10 节点/);assert.equal(r.output.content.split('\n').length,2);
@@ -268,6 +269,9 @@ test('lost save response is reconciled by readback and both subscriptions withou
  const r=await run('start|example.net|lite|40|local-secret','button',{}, {afterResponse:({method,options})=>{
   if(!lost&&method==='POST'&&options.url.includes('/admin/ADD.txt')){lost=true;return {error:'timeout'};}
  }});
+ assert(lost);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).backendRoute,'rules');
+ const saveIndex=r.requests.findIndex(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt'));
+ assert(r.requests.slice(saveIndex+1).filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy===undefined));
  assert(lost);assert.equal(r.writes.length,1);assert.equal(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified,true);
  assert.equal(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).length,1);
  assert(r.requests.some(x=>x.url.includes('&b64'))&&r.requests.some(x=>x.url.includes('&surge')));
@@ -306,4 +310,64 @@ test('adapter persists reserve progress and publishes ten only after on-demand s
  assert(r.states.some(x=>x.value.stage==='后备 Premium 检测'&&x.value.supplement.examined===3));
  assert(r.states.some(x=>x.value.stage==='后备节点速度复测'));
  assert(r.logs.some(x=>x.includes('补入 3')));
+});
+
+test('login transport failure retries through current rules while every measurement keeps its explicit node',async()=>{
+ const key='CFEdgeRank_example.net',sharedStore={};
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {sharedStore,fastTimers:true,respond:({options})=>{
+  if(options.url.endsWith('/login')&&options.policy==='DIRECT')return {error:'request timed out'};
+ }});
+ const logins=r.requests.filter(x=>x.url.endsWith('/login'));
+ assert.deepEqual(logins.map(x=>x.policy),['DIRECT',undefined]);
+ assert(r.requests.filter(x=>x.url.startsWith('https://example.net/')&&!x.url.endsWith('/login')).every(x=>x.policy===undefined&&!x.descriptor));
+ assert(r.requests.filter(x=>/cf_rank_light=|cf_rank=|cf_rank_premium=/.test(x.url)).every(x=>x.descriptor&&x.policy===undefined));
+ assert.equal(r.writes.length,1);assert(JSON.parse(r.store[key]).result.verified);
+ assert.equal(JSON.parse(r.store[key]).backendRoute,'rules');assert(r.states.some(x=>x.value.backendRetry&&x.value.backendRetry.includes('按现有规则')));
+ assert(!JSON.stringify([r.logs,r.store]).includes('local-secret'));
+ const next=await run('start|example.net|lite|40|local-secret','button',{}, {sharedStore});
+ assert(next.requests.filter(x=>x.url.startsWith('https://example.net/')).every(x=>x.policy==='DIRECT'));
+ assert.equal(JSON.parse(next.store[key]).backendRoute,'direct');
+});
+test('both backend paths failing stop before measurement after three total login attempts',async()=>{
+ const key='CFEdgeRank_example.net',lastSuccess={at:Date.now()-3600000,count:10,bytes:100,mode:'lite'};
+ const r=await run('start|example.net|lite|40|local-secret','button',{[key]:JSON.stringify({lastSuccess})},{fastTimers:true,respond:({options})=>{
+  if(options.url.endsWith('/login'))return {status:0};
+ }});
+ assert.deepEqual(r.requests.filter(x=>x.url.endsWith('/login')).map(x=>x.policy),['DIRECT',undefined,undefined]);
+ assert(!r.requests.some(x=>x.descriptor));assert.equal(r.writes.length,0);
+ const saved=JSON.parse(r.store[key]);assert.equal(saved.failureStage,'正在登录后台');assert.equal(saved.bytes,0);
+ assert.deepEqual(saved.lastSuccess,lastSuccess);assert.match(saved.message,/未收到响应.*3 次.*按现有规则/);
+});
+test('transport failure during final backend read switches route without restarting speed tests',async()=>{
+ let failed=false;
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options,requests})=>{
+  if(!failed&&options.url.includes('/admin/config.json')&&requests.some(x=>x.descriptor)){failed=true;return {error:'connection reset'};}
+ }});
+ assert(failed);assert.equal(r.writes.length,1);assert(JSON.parse(r.store['CFEdgeRank_example.net']).result.verified);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,2560);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,30);
+ assert(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).every(x=>x.policy===undefined));
+});
+test('HTTP rejection or bad credentials never switch routes to bypass a backend response',async()=>{
+ for(const response of [{status:403},{status:200,data:'wrong password page'}]) {
+  const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options})=>options.url.endsWith('/login')?response:null});
+  const logins=r.requests.filter(x=>x.url.endsWith('/login'));assert.equal(logins.length,1);assert.equal(logins[0].policy,'DIRECT');
+  assert(!r.requests.some(x=>x.descriptor));assert.equal(r.writes.length,0);
+  assert(!r.logs.some(x=>x.includes('后续管理请求')));
+ }
+});
+test('network change on failed login prevents fallback requests on the new network',async()=>{
+ const network={wifi:{ssid:'Synthetic first'}};
+ const r=await run('start|example.net|lite|40|local-secret','button',{}, {network,fastTimers:true,respond:({options})=>{
+  if(options.url.endsWith('/login')){network.wifi.ssid='Synthetic second';return {error:'timeout'};}
+ }});
+ assert.equal(r.requests.filter(x=>x.url.endsWith('/login')).length,1);assert.equal(r.writes.length,0);
+ assert.match(r.output.content,/网络变化/);
+});
+test('read-only subscription verification can use fallback without editing local configuration or backend',async()=>{
+ const r=await run('verify|example.net|lite|40|local-secret','button',{}, {fastTimers:true,respond:({options})=>{
+  if(options.url.endsWith('/login')&&options.policy==='DIRECT')return {error:'timeout'};
+ }});
+ assert.equal(r.requests.filter(x=>x.url.endsWith('/login')).length,2);
+ assert(r.logs.some(x=>x.includes('订阅核对通过')));assert.equal(r.writes.length,0);assert.equal(r.states.length,0);
 });
