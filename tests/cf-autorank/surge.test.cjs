@@ -67,7 +67,10 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.equal(verified.result.premium.verified,10);assert.equal(verified.lastSuccess.premiumVerified,10);
  assert(verified.result.selected.every(e=>e.premium.samples.length===3));
  const premiumRequests=r.requests.filter(x=>x.url.startsWith('https://www.youtube.com/premium?'));
- assert.equal(premiumRequests.length,58);assert(premiumRequests.every(x=>x.descriptor&&!x.policy));
+ assert.equal(premiumRequests.length,40+24+10);assert(premiumRequests.every(x=>x.descriptor&&!x.policy));
+ assert.equal(verified.result.premium.preflight.tested,40);assert.equal(verified.result.downloadTestedCount,40);
+ assert(r.logs.some(line=>line.includes('下载前 Premium 首检：已测 40/40')));
+ assert(r.logs.some(line=>line.includes('入围 Premium 二检：复用新鲜首检 24 个')));
  assert.match(r.output.content,/YT✓/);
  assert(verified.result.selected.every(e=>e.name.startsWith('【🇺🇸】 CF')));
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
@@ -87,8 +90,9 @@ test('Premium failure never updates backend and preserves the previous successfu
  const key='CFEdgeRank_example.net',lastSuccess={at:Date.now()-3600000,network:{kind:'cellular'},count:10,bytes:1000,changed:true,mode:'lite'};
  const r=await run('start|example.net|lite|40|local-secret','button',{[key]:JSON.stringify({lastSuccess})},{premiumUnavailable:true});
  assert.equal(r.writes.length,0);const saved=JSON.parse(r.store[key]);assert.equal(saved.running,false);assert.equal(saved.stage,'未完成');
- assert.deepEqual(saved.lastSuccess,lastSuccess);assert.equal(saved.premium.passed,0);assert.equal(saved.premium.unavailable,40);
- assert.match(r.output.content,/Premium 合格 0\/10/);assert(!r.output.content.includes('YT✓'));
+ assert.deepEqual(saved.lastSuccess,lastSuccess);assert.equal(saved.premium.passed,0);assert.equal(saved.premium.preflight.unavailable,40);
+ assert.equal(saved.bytes,0);assert.equal(saved.failureStage,'下载前 Premium 首检');
+ assert.match(r.output.content,/Premium 首检合格 0\/10/);assert(!r.output.content.includes('YT✓'));
 });
 test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
  const sharedStore={};
@@ -304,10 +308,12 @@ test('network changes while waiting for a backend retry prevent subsequent reque
 });
 
 test('adapter persists reserve progress and publishes ten only after on-demand supplementation',async()=>{
- const seen=[];
+ const seen=[],counts=new Map();
  const r=await run('start|example.net|lite|40|local-secret','button',{}, {respond:({options})=>{
   if(!options.url.startsWith('https://www.youtube.com/premium?'))return;
-  const d=options['policy-descriptor'];if(!seen.includes(d))seen.push(d);
+  const d=options['policy-descriptor'],ordinal=(counts.get(d)||0)+1;counts.set(d,ordinal);
+  if(ordinal===1)return; // Early checks pass; seventeen finalists fail their second check.
+  if(!seen.includes(d))seen.push(d);
   if(seen.indexOf(d)>=7&&seen.indexOf(d)<24)return {status:200,data:premiumPage({unavailable:true})};
  }});
  const s=JSON.parse(r.store['CFEdgeRank_example.net']);
@@ -353,7 +359,7 @@ test('transport failure during final backend read switches route without restart
  const state=JSON.parse(r.store['CFEdgeRank_example.net']);
  assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,state.result.lightRequests);
  assert.equal(state.result.lightScreen.firstTested,1280);
- assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,58);
+ assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_premium=')).length,40+24+10);
  assert(r.requests.filter(x=>x.method==='POST'&&x.url.includes('/admin/ADD.txt')).every(x=>x.policy===undefined));
 });
 test('HTTP rejection or bad credentials never switch routes to bypass a backend response',async()=>{
@@ -555,7 +561,7 @@ test('successful summary distinguishes full first-check coverage from the select
  assert.match(n.options.text,/轻量首检：覆盖 1280\/1280 个入口 · 首检合格 1280 个 IP/);
  assert(n.options.text.includes('轻量二检：请求 '+light.secondRequests+' 次 · 已完成 '+light.secondTested+' 次 · 确认 '+light.secondPassed+' 个 IP 双检合格 · 省略 '+light.skippedSecond+' 次'));
  assert(n.options.text.includes('轻量请求：首检 '+light.firstRequests+' 次（含降载复检） · 二检 '+light.secondRequests+' 次'));
- assert(n.options.text.includes(light.secondPassed+' 个 IP 已确认双检合格，40 个进入下载初筛'));
+ assert(n.options.text.includes(light.secondPassed+' 个 IP 已确认双检合格，40 个下载候选中 40 个通过 Premium 首检并进入下载初筛'));
  assert(!n.options.text.includes('1280 个通过'));assert(!n.options.text.includes('1280 个可用'));
  assert.equal(r.requests.filter(x=>x.url.includes('cf_rank_light=')).length,light.firstRequests+light.secondRequests);
 });

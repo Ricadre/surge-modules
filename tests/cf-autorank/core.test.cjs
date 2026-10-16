@@ -46,7 +46,8 @@ test('Premium filtering skips faster unavailable nodes and ranks passing nodes b
   return probe(spec);
  };
  const r=await C.execute(f.env,f.opts,pools);
- assert(r.verified);assert.equal(r.premium.unavailable,3);assert.equal(r.premium.tested,24);assert.equal(r.premium.verified,10);
+ assert(r.verified);assert.equal(r.premium.preflight.unavailable,3);assert.equal(r.premium.tested,24);assert.equal(r.premium.verified,10);
+ assert.equal(r.downloadTestedCount,37);assert.equal(r.premium.preflight.skippedDownloads,3);
  assert(r.selected.every(e=>!seen.slice(0,3).some(d=>d.startsWith('CF-Probe-'+e.ip+'-'))));
  assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
  assert(r.selected.every(e=>e.premium.samples.length===3));assert.equal(f.posts.length,1);
@@ -60,7 +61,7 @@ test('only nine Premium-capable nodes never publish or fill with unqualified ent
   }
   return probe(spec);
  };
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 9\/10/);
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 首检合格 9\/10/);
  assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);assert.equal(seen.length,40);
 });
 // Synthetic scenario: seven of the first 24 pass; later candidates are reserves.
@@ -69,13 +70,20 @@ function reserveFixture(options={}) {
  const seen=[],downloads=[],events=[];let stage='',elapsed=0;
  f.opts.limit=options.limit||40;f.opts.mode=options.mode||'lite';
  f.env.now=()=>now()+elapsed;
- f.env.progress=async p=>{stage=p.stage;await progress(p);};
+ f.env.progress=async p=>{
+  stage=p.stage;
+  if(options.delayed&&stage==='后备 Premium 与稳定性检查'&&!elapsed)elapsed=11*60*1000;
+  await progress(p);
+ };
  f.env.probe=async spec=>{
   const response=await probe(spec),d=spec.descriptor;
   if(spec.url.startsWith('https://www.youtube.com/premium?')) {
+   events.push({kind:'premium',descriptor:d,stage});
+   // All candidates pass the new early single check. This fixture exercises
+   // later qualification loss and reserve replacement, not early rejection.
+   if(stage==='下载前 Premium 首检')return response;
    if(!seen.includes(d))seen.push(d);
-   const i=seen.indexOf(d);events.push({kind:'premium',descriptor:d,stage});
-   if(i===24&&options.delayed)elapsed=11*60*1000;
+   const i=seen.indexOf(d);
    if((i>=7&&i<24)||i===24&&options.rejectFirstReserve||stage==='出口与 Premium 最终复核'&&i<7&&options.refreshFailure)
     return {...response,data:premiumPage({unavailable:true})};
   }
@@ -158,7 +166,7 @@ test('unknown, Lite-only and changing Premium regions fail closed',async()=>{
    if(kind==='timeout')return {status:200,error:'timeout',data:premiumPage()};
    return {status:200,data:premiumPage({lite:kind==='lite',region:n===1?'US':'JP'})};
   };
-  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 0\/10/);
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium (?:首检)?合格 0\/10/);
   assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  }
 });

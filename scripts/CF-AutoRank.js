@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.19. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.20. Credentials are entered by the user; never bundle secrets.
 (function(root) {
 'use strict';
 const MAX_HTML=2500000;
@@ -566,6 +566,27 @@ async function execute(env,opts,pools,poolInfo=null) {
   const downloadEntries=light.downloads;
   assert(downloadEntries.length>=10,'有效下载候选不足 10 个，保留原订阅');
   progress.downloadCandidateCount=downloadEntries.length;
+  progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,recoveryAttempts:0,recovered:0,bytes:0,
+    preflight:{total:downloadEntries.length,tested:0,passed:0,unavailable:0,unknown:0,skippedDownloads:0,reused:0,refreshed:0}};
+  progress.premiumFinalFailures=[];
+  // Each download candidate must establish Premium availability before even
+  // the small Range download. Keep one sample; finalists complete the pair
+  // before full downloads, then still need the final publication check.
+  const preflight=new Array(downloadEntries.length);
+  await update('下载前 Premium 首检',0,downloadEntries.length);
+  await pool(downloadEntries,4,async(e,index)=>{
+    const sample=await premiumProbe(e),stats=progress.premium.preflight;
+    stats.tested++;
+    if(sample.status==='available'){
+      stats.passed++;preflight[index]={...e,premiumInitial:sample};
+    } else {
+      stats[sample.status==='unavailable'?'unavailable':'unknown']++;stats.skippedDownloads++;
+    }
+    await update('下载前 Premium 首检',stats.tested,downloadEntries.length);
+  });
+  const premiumEntries=preflight.filter(Boolean);
+  assert(premiumEntries.length>=10,'Premium 首检合格 '+premiumEntries.length+'/10，不足 10 个，未开始下载测速，保留原订阅');
+  progress.downloadTestedCount=premiumEntries.length;
   async function download(e,size,seconds) {
     await guard(); const offset=Math.floor(env.random()*150000000);
     const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout:seconds,binary:true,
@@ -574,13 +595,11 @@ async function execute(env,opts,pools,poolInfo=null) {
     assert(r.status!==200,'下载源未遵守 Range，已停止，保留原订阅');
     return downloadValid(r,offset,size);
   }
-  done=0;const screened=[];await update('下载初筛',0,downloadEntries.length);
-  await pool(downloadEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,downloadEntries.length);});
+  done=0;const screened=[];await update('下载初筛',0,premiumEntries.length);
+  await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const selected=[];
-  progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,recoveryAttempts:0,recovered:0,bytes:0};
-  progress.premiumFinalFailures=[];
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
   async function stableOne(e) {
@@ -604,15 +623,20 @@ async function execute(env,opts,pools,poolInfo=null) {
     progress.premium.bytes+=result.bytes;
     return result;
   }
-  async function premiumPair(e) {
-    const samples=[await premiumProbe(e)];
+  async function premiumPair(e,reuseInitial=false) {
+    const initial=reuseInitial&&e.premiumInitial;
+    const fresh=initial&&initial.status==='available'&&initial.reason==='full_premium_offer'&&
+      Number.isFinite(initial.checkedAt)&&initial.checkedAt<=env.now()&&env.now()-initial.checkedAt<=premium.MAX_AGE/2;
+    if(initial)progress.premium.preflight[fresh?'reused':'refreshed']++;
+    const samples=[fresh?initial:await premiumProbe(e)];
     if(samples[0].status==='available')samples.push(await premiumProbe(e));
-    const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region;
+    const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region&&
+      (!initial||samples[0].region===initial.region);
     const status=available?'available':samples.some(s=>s.status==='unavailable')?'unavailable':samples.every(s=>s.status==='available')?'inconsistent':'unknown';
     return {status,region:available?samples[0].region:null,samples};
   }
   async function checkCandidate(e) {
-    const result=await premiumPair(e);
+    const result=await premiumPair(e,true);
     progress.premium.tested++;
     if(result.status!=='available')progress.premium[result.status]++;
     return result;
@@ -771,6 +795,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
   outcome.lightRequests=progress.lightRequests;
   outcome.downloadCandidateCount=downloadEntries.length;
+  outcome.downloadTestedCount=premiumEntries.length;
   outcome.downloadReasons=downloadEntries.reduce((counts,e)=>{counts[e.downloadReason]=(counts[e.downloadReason]||0)+1;return counts;},{});
   outcome.downloadCandidates=downloadEntries.map(({ip,port,key,lightLatency,downloadReason})=>({ip,port,key,lightLatency,downloadReason}));
   async function verify(cfg,expected) {
@@ -990,7 +1015,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.19 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.20 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const light=s.lightScreen||s.result&&s.result.lightScreen;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
@@ -1011,10 +1036,11 @@ function progressContent(s,now) {
       if(s.stage==='轻量初筛降载复核')return stage+'\n首检覆盖 '+light.firstTested+'/'+light.firstTotal+' · 并发 '+(s.lightConcurrency||8);
       if(s.stage==='下载初筛'&&light.selectionComplete)return stage+poolNote+'\n二检 '+light.secondTested+' 次 · 省 '+light.skippedSecond+' 次 · '+traffic;
     }
+    if(s.stage==='下载前 Premium 首检')return stage+'\n合格 '+(premium&&premium.preflight&&premium.preflight.passed||0)+' 个 · 尚未下载测速 · '+traffic;
     if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
     if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
     if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;
-    if(s.stage==='出口与 Premium 最终复核')return stage+'\nPremium 复核 '+(premium&&premium.verified||0)+'/10'+(premium&&premium.recoveryAttempts?' · 恢复 '+(premium.recovered||0)+'/'+premium.recoveryAttempts:'')+' · 正文 '+traffic;
+    if(s.stage==='出口与 Premium 最终复核')return stage+'\n'+(premium&&premium.preflight?'预检后复核 ':'Premium 复核 ')+(premium&&premium.verified||0)+'/10'+(premium&&premium.recoveryAttempts?' · 恢复 '+(premium.recovered||0)+'/'+premium.recoveryAttempts:'')+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'&&premium&&premium.eligible!==undefined)return stage+'\n待复测 '+premium.eligible+' 个 · 正文 '+traffic;
     if(s.stage==='低流量连通与延迟初筛'||s.stage==='轻量初筛降载复核')return stage+'\n并发 '+(s.lightConcurrency||8)+' · '+duration(now-(s.startedAt||now))+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'||s.stage==='YouTube Premium 发布前复核')return stage+'\n'
@@ -1056,7 +1082,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.19';
+const UA='CF-Edge-AutoRank/0.1.20';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -1116,6 +1142,11 @@ function statusText(s){
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
   if(s.startedAt)lines.push('本轮总耗时：'+ui.duration(Math.max(0,(s.running?Date.now():s.updatedAt||Date.now())-s.startedAt)));
   const premium=s.premium||s.result&&s.result.premium;
+  if(premium&&premium.preflight){
+    const p=premium.preflight;
+    lines.push('下载前 Premium 首检：已测 '+p.tested+'/'+p.total+' · 合格 '+p.passed+' · 地区不可用 '+p.unavailable+' · 未确认 '+p.unknown+' · 跳过下载 '+p.skippedDownloads+' 个');
+    lines.push('入围 Premium 二检：复用新鲜首检 '+p.reused+' 个 · 首检过旧重新双检 '+p.refreshed+' 个');
+  }
   if(premium&&premium.eligible!==undefined)lines.push('Premium 预检：'+premium.eligible+'/'+premium.tested+' 个通过');
   if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
@@ -1308,7 +1339,7 @@ try {
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const coverage=result.lightScreen&&Number.isInteger(result.lightScreen.firstTested)?
-    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个进入下载初筛':
+    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个下载候选中 '+result.downloadTestedCount+' 个通过 Premium 首检并进入下载初筛':
     '本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选';
   const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n'+coverage+'；'+complete+'/20 次下载复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();

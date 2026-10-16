@@ -45,7 +45,9 @@ function simulation(options={}) {
   if(kind==='full'&&active||kind!=='full'&&fullActive)overlaps++;
   active++;if(kind==='full')fullActive++;if(small)smallActive++;
   peakFull=Math.max(peakFull,fullActive);peakSmall=Math.max(peakSmall,smallActive);
-  const r=['full','premium','stable','exit'].includes(kind)?rank(ip):null;
+  // Current preflight runs before any small downloads have established ranks.
+  // Reserve/retest fault injection remains tied to the later screening rank.
+  const r=['full','premium','stable','exit'].includes(kind)&&!(kind==='premium'&&screened.length===0)?rank(ip):null;
   let ms=kind==='light'?200+h%71:kind==='screen'?200+(h%500)*2:kind==='premium'?450+(r%4)*70:kind==='exit'?200+(r%3)*50:100+r*5;
   if(kind==='full') {
    if(options.equal)ms=2000;

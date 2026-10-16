@@ -12,7 +12,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.19';
+const UA='CF-Edge-AutoRank/0.1.20';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -72,6 +72,11 @@ function statusText(s){
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
   if(s.startedAt)lines.push('本轮总耗时：'+ui.duration(Math.max(0,(s.running?Date.now():s.updatedAt||Date.now())-s.startedAt)));
   const premium=s.premium||s.result&&s.result.premium;
+  if(premium&&premium.preflight){
+    const p=premium.preflight;
+    lines.push('下载前 Premium 首检：已测 '+p.tested+'/'+p.total+' · 合格 '+p.passed+' · 地区不可用 '+p.unavailable+' · 未确认 '+p.unknown+' · 跳过下载 '+p.skippedDownloads+' 个');
+    lines.push('入围 Premium 二检：复用新鲜首检 '+p.reused+' 个 · 首检过旧重新双检 '+p.refreshed+' 个');
+  }
   if(premium&&premium.eligible!==undefined)lines.push('Premium 预检：'+premium.eligible+'/'+premium.tested+' 个通过');
   if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
@@ -264,7 +269,7 @@ try {
   requireOwner();
   const complete=result.selected.reduce((n,x)=>n+x.samples.filter(s=>!s.partial).length,0);
   const coverage=result.lightScreen&&Number.isInteger(result.lightScreen.firstTested)?
-    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个进入下载初筛':
+    '本轮 '+result.lightScreen.firstTested+'/'+result.lightScreen.firstTotal+' 个入口完成首检，'+result.lightScreen.firstPassed+' 个 IP 首检合格；'+result.lightScreen.secondPassed+' 个 IP 已确认双检合格，'+result.downloadCandidateCount+' 个下载候选中 '+result.downloadTestedCount+' 个通过 Premium 首检并进入下载初筛':
     '本轮 '+result.candidateCount+' 个入口轻量初筛，'+result.reachable+' 个通过，'+result.downloadCandidateCount+' 个下载候选';
   const message=(result.changed?'前十已保存':'列表无变化')+'，Premium 10/10 检测通过，原始和 Surge 订阅均已核对。请刷新原订阅。\n'+coverage+'；'+complete+'/20 次下载复测为完整下载，其余为有效限时样本。\nPremium 仅表示检测时的地区可用性，不验证会员账号资格；仅代表当前网络和本轮候选。';
   const finishedAt=Date.now();
