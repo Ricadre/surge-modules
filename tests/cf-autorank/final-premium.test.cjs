@@ -32,6 +32,13 @@ function scenario(options={}) {
 }
 const transport=kind=>({error:kind==='timeout'?'timeout':'connection reset with private details',status:0,data:''});
 const failedState=f=>f.progress.at(-1);
+function assertReplaced(r,f){
+ assert(r.verified);assert.equal(f.posts.length,1);assert.equal(r.selected.length,10);
+ assert(r.selected.every(e=>P.qualified(e.premium,f.env.now())&&e.samples.length===2));
+ assert(!r.selected.some(e=>f.target().startsWith('CF-Probe-'+e.ip+'-')));
+ assert(r.finalSelection.rejected>=1);assert(r.finalSelection.replacements>=1);
+ assert(r.premiumFinalFailures.some(e=>e.discarded));assert.equal(f.active(),0);
+}
 
 test('one third-sample transport failure gets a fresh matching trio and retains its diagnostic history',async()=>{
  for(const kind of ['timeout','connection']) {
@@ -51,12 +58,11 @@ test('one third-sample transport failure gets a fresh matching trio and retains 
  }
 });
 
-test('a failed replacement trio stops at its first bad sample without another recovery or publication',async()=>{
+test('a failed recovery trio stops at its first bad sample and another qualified node replaces it',async()=>{
  for(const failAt of [4,5,6]) {
   const f=scenario({reply:n=>n===3||n===failAt?transport('timeout'):null});
-  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/候选 \d+ · Premium 发布前复核未通过：恢复三检失败，请求超时/);
-  assert.equal(f.counts.get(f.target()),failAt);assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
-  const s=failedState(f);assert.equal(s.premium.recoveryAttempts,1);assert.equal(s.premium.recovered,0);
+  const s=await C.execute(f.env,f.opts,pools);assertReplaced(s,f);
+  assert.equal(f.counts.get(f.target()),failAt);assert.equal(s.premium.recoveryAttempts,1);assert.equal(s.premium.recovered,0);
   assert.equal(s.premiumFinalFailures.length,2);
   assert.deepEqual(s.premiumFinalFailures.map(d=>d.attempt),['initial','recovery']);
   assert(s.premiumFinalFailures.every(d=>d.recoveryAttempted&&!d.recovered));assert.equal(f.active(),0);
@@ -76,9 +82,9 @@ test('HTTP rejection and explicit Premium or country failures do not receive tra
  ];
  for(const c of cases) {
   const f=scenario({reply:n=>n===3?c.reply:null});
-  await assert.rejects(()=>C.execute(f.env,f.opts,pools),c.text);
-  assert.equal(f.counts.get(f.target()),3);assert.equal(f.posts.length,0);
-  const s=failedState(f),d=s.premiumFinalFailures[0];
+  const s=await C.execute(f.env,f.opts,pools);assertReplaced(s,f);
+  assert.equal(f.counts.get(f.target()),3);
+  const d=s.premiumFinalFailures[0];
   assert.equal(d.reason,c.reason);assert(!d.retryable&&!d.recoveryAttempted&&!d.recovered);
   assert.equal(s.premium.recoveryAttempts,0);assert.equal(f.active(),0);
  }
@@ -86,24 +92,24 @@ test('HTTP rejection and explicit Premium or country failures do not receive tra
 
 test('a replacement trio cannot erase a newly observed different country',async()=>{
  const f=scenario({reply:n=>n===3?transport('timeout'):n===4?{data:premiumPage({region:'JP'})}:null});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/恢复三检失败，地区前后不一致/);
- assert.equal(f.counts.get(f.target()),4);assert.equal(f.posts.length,0);
- assert.equal(failedState(f).premiumFinalFailures.at(-1).reason,'region_changed');
+ const r=await C.execute(f.env,f.opts,pools);assertReplaced(r,f);
+ assert.equal(f.counts.get(f.target()),4);
+ assert.equal(r.premiumFinalFailures.at(-1).reason,'region_changed');
 });
 
 test('expired evidence is identified separately and cannot be recovered as a transient network failure',async()=>{
  const f=scenario({expireAtThird:true,reply:n=>n===3?transport('timeout'):null});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/检测记录已超过 10 分钟/);
- const s=failedState(f);assert(s.premiumFinalFailures.some(d=>d.reason==='expired'&&d.oldestAgeMs>=11*60*1000));
- assert.equal(s.premium.recoveryAttempts,0);assert.equal(f.posts.length,0);assert.equal(f.active(),0);
+ const s=await C.execute(f.env,f.opts,pools);assertReplaced(s,f);
+ assert(s.premiumFinalFailures.some(d=>d.reason==='expired'&&d.oldestAgeMs>=11*60*1000));
+ assert.equal(s.premium.recoveryAttempts,0);assert.equal(f.active(),0);
 });
 
 test('failed old-pair refresh keeps a specific phase and response code without recovery',async()=>{
  const f=scenario({oldPair:true,reply:n=>n===3?{status:503,data:''}:null});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/候选 \d+ · Premium 更新检测未通过：HTTP 请求未成功（503）/);
- const d=failedState(f).premiumFinalFailures[0];
+ const r=await C.execute(f.env,f.opts,pools);assertReplaced(r,f);
+ const d=r.premiumFinalFailures[0];
  assert.equal(d.phase,'refresh');assert.equal(d.reason,'http');assert.equal(d.httpStatus,503);
- assert(!d.recoveryAttempted);assert.equal(f.posts.length,0);assert.equal(f.active(),0);
+ assert(!d.recoveryAttempted);assert.equal(f.active(),0);
 });
 
 test('cancellation or a network change during recovery backoff stops before a new request',async()=>{
@@ -125,6 +131,7 @@ test('all in-flight final failures are drained and persisted rather than retaini
  };
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/所在地区明确不支持/);
  const failures=failedState(f).premiumFinalFailures;
- assert.equal(failures.length,4);assert.equal(new Set(failures.map(d=>d.candidate)).size,4);
+ assert.equal(failures.length,40);assert.equal(new Set(failures.map(d=>d.endpoint)).size,40);
+ assert(failures.every(d=>d.discarded));assert.equal(failedState(f).finalSelection.rejected,40);
  assert(failures.every(d=>d.reason==='region_unavailable'));assert.equal(f.posts.length,0);assert.equal(f.active(),0);
 });

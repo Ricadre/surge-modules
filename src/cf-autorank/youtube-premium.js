@@ -43,7 +43,8 @@ function classify(response) {
   if(!data||!data.contents)return result('unknown','page_format');
   const rows=objects(data.contents);if(!rows.length)return result('unknown','page_format');
   const text=rows.flatMap(v=>['text','content','simpleText','label'].map(k=>typeof v[k]==='string'?v[k]:'')).join('\n');
-  if(/(?:YouTube\s+)?Premium\s+(?:is\s+)?(?:not(?:\s+yet)?\s+available|unavailable)\s+in\s+your\s+(?:country|region)|(?:couldn[’']t|cannot|can[’']t)\s+verify\s+your\s+country/i.test(text))return result('unavailable','region_unavailable');
+  if(/(?:YouTube\s+)?Premium\s+(?:is\s+)?(?:not(?:\s+yet)?\s+available|unavailable)\s+in\s+your\s+(?:country|region)/i.test(text))return result('unavailable','region_unavailable');
+  if(/(?:couldn[’']t|cannot|can[’']t)\s+verify\s+your\s+country/i.test(text))return result('unknown','country_unverified');
   const regions=Array.from(html.matchAll(/"INNERTUBE_CONTEXT_GL"\s*:\s*"([A-Z]{2})"/g)).map(m=>m[1]);
   if(!regions.length||new Set(regions).size!==1||['AA','XX','ZZ'].includes(regions[0]))return result('unknown','region_unknown');
   // The full-Premium offer must have a price and an active purchase action.
@@ -116,7 +117,7 @@ function failure(value,now) {
     if(!region(s.region))return result('region_unknown',index);
     if(firstRegion&&s.region!==firstRegion)return result('region_changed',index);
   }
-  const permanent=['region_unavailable','challenge','body','page_format','region_unknown','no_full_premium_offer'];
+  const permanent=['region_unavailable','country_unverified','challenge','body','page_format','region_unknown','no_full_premium_offer'];
   for(let i=0;i<samples.length;i++) {
     const s=samples[i];if(!s)continue;
     if(s.status==='unavailable')return result('region_unavailable',i);

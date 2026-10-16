@@ -458,7 +458,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
-  const selected=[];
+  const selected=[],reserveRanking=[],pending=[],rejectedIPs=new Set(),observed=new Map(),initialFinalIPs=new Set();
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
   async function stableOne(e) {
@@ -534,6 +534,7 @@ async function execute(env,opts,pools,poolInfo=null) {
     const leaders=topDistinct(ranking.filter(Boolean),10);
     if(leaders.length===10&&sample.mbps<leaders[9].score) {
       progress.refinement.skippedByBound++;progress.refinement.savedSecondSamples++;
+      pending.push({e,sample,index});
     } else {
       const second=await download(e,mode.sampleBytes,8);await guard();progress.refinement.secondSamples++;
       const samples=[sample,second];
@@ -548,34 +549,46 @@ async function execute(env,opts,pools,poolInfo=null) {
   const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
   progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
   let nextReserve=0;
-  while(selected.length<10&&nextReserve<reserves.length) {
-    await guard();
-    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
-    const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
-    const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
-    const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
-    progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
-    progress.supplement.refined+=checked.length;
-    progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
-    const ready=checked.filter(e=>e.valid);let done=0;
-    await update('后备节点速度复测',0,ready.length);
-    for(const e of ready) {
-      const row=await refineReserve(e);
-      if(row.valid){selected.push(row);progress.supplement.added++;}
-      else progress.supplement.failedRefine++;
-      progress.premium.passed=selected.length;
-      await update('后备节点速度复测',++done,ready.length);
-    }
-    await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+  function selectRanking() {
+    selected.splice(0,selected.length,...topDistinct(ranking.filter(Boolean).concat(reserveRanking).filter(e=>!rejectedIPs.has(e.ip)),10));
+    progress.premium.passed=selected.length;
+    progress.premium.verified=selected.filter(e=>observed.has(e.ip)&&premium.qualified(observed.get(e.ip).premium,env.now())).length;
+    if(progress.finalSelection)progress.finalSelection.replacements=selected.filter(e=>!initialFinalIPs.has(e.ip)&&observed.has(e.ip)&&premium.qualified(observed.get(e.ip).premium,env.now())).length;
   }
+  async function supplement() {
+    while(selected.length<10&&nextReserve<reserves.length) {
+      await guard();
+      if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
+      const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
+      const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
+      const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+      progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
+      progress.supplement.refined+=checked.length;
+      progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
+      const ready=checked.filter(e=>e.valid);let done=0;
+      await update('后备节点速度复测',0,ready.length);
+      for(const e of ready) {
+        const row=await refineReserve(e);
+        if(row.valid){reserveRanking.push(row);progress.supplement.added++;}
+        else progress.supplement.failedRefine++;
+        selectRanking();
+        await update('后备节点速度复测',++done,ready.length);
+      }
+      await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+    }
+  }
+  await supplement();
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
     'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
-  selected.splice(0,selected.length,...topDistinct(selected,10));
-  const observed=new Array(selected.length),geoCache=new Map();
+  selectRanking();
+  selected.forEach(e=>initialFinalIPs.add(e.ip));
+  const geoCache=new Map();
+  progress.finalSelection={rounds:0,examined:0,rejected:0,expired:0,replacementChecks:0,replacements:0,resumedDownloads:0};
+  let lastFinalError=null;
   function failureText(issue) {
     const labels={network_timeout:'请求超时',network:'连接失败',region_unavailable:'所在地区明确不支持 Premium',
       challenge:'遇到验证或同意页面',body:'响应正文不完整或异常',page_format:'无法识别页面结构',
-      region_unknown:'无法确认地区',no_full_premium_offer:'页面未确认完整 Premium 服务',
+      region_unknown:'无法确认地区',country_unverified:'YouTube 无法验证出口国家',no_full_premium_offer:'页面未确认完整 Premium 服务',
       region_changed:'地区前后不一致',expired:'检测记录已超过 10 分钟',future_time:'检测时间晚于当前时间',
       invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
     return issue.reason==='http'?'HTTP 请求未成功（'+(issue.httpStatus||'未知')+'）':labels[issue.reason]||'检测结果无法确认';
@@ -583,6 +596,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   async function recordFinalFailure(row,index,phase,issue,attempt='initial') {
     const diagnostic={candidate:index+1,endpoint:row.key,phase,attempt,...issue,recoveryAttempted:attempt==='recovery',recovered:false};
     progress.premiumFinalFailures.push(diagnostic);
+    lastFinalError=finalError(index,phase,issue,attempt==='recovery');
     await update('出口与 Premium 最终复核',progress.premium.verified,10);
     return diagnostic;
   }
@@ -593,9 +607,9 @@ async function execute(env,opts,pools,poolInfo=null) {
   async function finishPremium(row,index) {
     row.premium.samples.push(await premiumProbe(row));
     const issue=premium.failure(row.premium,env.now());
-    if(!issue)return;
+    if(!issue)return true;
     const diagnostic=await recordFinalFailure(row,index,'final',issue);
-    if(!issue.retryable)throw finalError(index,'final',issue);
+    if(!issue.retryable)return false;
     // One bounded recovery is permitted only for an unambiguous third-sample
     // transport failure. Old evidence is not reused in the replacement trio.
     diagnostic.recoveryAttempted=true;progress.premium.recoveryAttempts++;
@@ -612,31 +626,77 @@ async function execute(env,opts,pools,poolInfo=null) {
       // stops immediately; this recovery is never recursively retried.
       if(problem&&(!sampleValid||problem.reason!=='incomplete'||attempt===2)) {
         await recordFinalFailure(row,index,'final',problem,'recovery');
-        throw finalError(index,'final',problem,true);
+        return false;
       }
     }
     row.premium=replacement;diagnostic.recovered=true;progress.premium.recovered++;
     await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    return true;
   }
-  await update('出口与 Premium 最终复核',0,10);
-  await pool(selected,4,async(e,index)=>{
-    const row={...e,egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
-    // Refresh only this node's old pair, checking age when its worker reaches
-    // this step. All nodes still need three fresh, matching Premium responses.
-    if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
-      const result=await premiumPair(row);
-      if(result.status!=='available') {
-        const issue=premium.failure(result,env.now());
-        await recordFinalFailure(row,index,'refresh',issue);
-        throw finalError(index,'refresh',issue);
-      }
-      row.premium=result;progress.premium.refreshed++;
+  function rejectFinal(e) {
+    if(!rejectedIPs.has(e.ip)){rejectedIPs.add(e.ip);progress.finalSelection.rejected++;}
+    for(const diagnostic of progress.premiumFinalFailures)if(diagnostic.endpoint===e.key&&!diagnostic.recovered)diagnostic.discarded=true;
+    observed.delete(e.ip);selectRanking();
+  }
+  async function resumeCompetitiveDownloads() {
+    // Previously pruned first samples are bounds, not measured fallback scores.
+    // Removing a finalist can lower the cutoff: finish every newly competitive
+    // second sample (including ties) before admitting a lower-ranked reserve.
+    while(pending.length) {
+      await guard();selectRanking();
+      const {e,sample,index}=pending[0];
+      if(selected.length===10&&sample.mbps<selected[9].score)break;
+      pending.shift();
+      await update('补位第二次下载',progress.finalSelection.resumedDownloads,progress.finalSelection.resumedDownloads+1);
+      const second=await download(e,mode.sampleBytes,8);await guard();
+      progress.refinement.secondSamples++;progress.refinement.skippedByBound--;progress.refinement.savedSecondSamples--;
+      progress.finalSelection.resumedDownloads++;
+      ranking[index]={...e,valid:second.valid,score:Math.min(sample.mbps,second.mbps),samples:[sample,second]};
+      selectRanking();
+      await update('补位第二次下载',progress.finalSelection.resumedDownloads,progress.finalSelection.resumedDownloads);
     }
-    await finishPremium(row,index);
-    observed[index]=row;
-    progress.premium.verified++;await update('出口与 Premium 最终复核',progress.premium.verified,10);
-  });
-  const expectedNames=namedEntries(observed);
+  }
+  // A failed node is removed for this run, rather than repeatedly probing it
+  // until it passes or throwing away every healthy candidate. Each candidate
+  // reaches final validation once; a confirmed trio that expires is also
+  // removed. Cancellation, ownership/network errors and backend conflicts still
+  // abort the run. Reserve retests share the existing 24-candidate budget.
+  for(;;) {
+    await guard();selectRanking();
+    for(const [index,e] of selected.slice().entries()) {
+      const prior=observed.get(e.ip);
+      if(prior&&!premium.qualified(prior.premium,env.now())) {
+        await recordFinalFailure(prior,index,'final',premium.failure(prior.premium,env.now()));
+        progress.finalSelection.expired++;rejectFinal(e);
+      }
+    }
+    await resumeCompetitiveDownloads();await supplement();selectRanking();
+    assert(selected.length===10,(lastFinalError?lastFinalError.message+'；':'')+
+      '复核补位不足 10 个（有效下载候选 '+selected.length+'/10，'+(progress.supplement.limited?'已达共享补选上限':'本轮候选已用尽')+'），保留原订阅');
+    const targets=selected.map((e,index)=>({e,index})).filter(({e})=>!observed.has(e.ip));
+    if(!targets.length) {
+      if(selected.every(e=>premium.qualified(observed.get(e.ip).premium,env.now())))break;
+      continue; // A previously confirmed row may have expired during a download.
+    }
+    progress.finalSelection.rounds++;
+    await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    await pool(targets,4,async({e,index})=>{
+      progress.finalSelection.examined++;
+      if(!initialFinalIPs.has(e.ip))progress.finalSelection.replacementChecks++;
+      const row={...e,premium:{...e.premium,samples:e.premium.samples.slice()},egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
+      if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
+        const result=await premiumPair(row);
+        if(result.status!=='available') {
+          await recordFinalFailure(row,index,'refresh',premium.failure(result,env.now()));
+          rejectFinal(e);await update('出口与 Premium 最终复核',progress.premium.verified,10);return;
+        }
+        row.premium=result;progress.premium.refreshed++;
+      }
+      if(await finishPremium(row,index))observed.set(e.ip,row);else rejectFinal(e);
+      selectRanking();await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    });
+  }
+  const expectedNames=namedEntries(selected.map(e=>observed.get(e.ip)));
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
@@ -646,6 +706,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:light.stats.secondPassed,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
+  outcome.finalSelection={...progress.finalSelection};
   outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
   outcome.lightScreen=light.stats;

@@ -24,6 +24,15 @@ test('missing, conflicting and placeholder regions are unknown, never default to
   page()+'<script>{"INNERTUBE_CONTEXT_GL":"JP"}</script>'])assert.equal(P.classify(response(data)).status,'unknown');
  assert.equal(P.classify(response(page({region:'JP'}))).region,'JP');
 });
+test('country verification rejection remains ineligible without being mislabeled as a known unsupported region',()=>{
+ for(const message of ["We couldn't verify your country","We can’t verify your country","We cannot verify your country"]) {
+  const result=P.classify(response(page({unavailable:true}).replace('YouTube Premium is not available in your country',message)));
+  assert.deepEqual(result,{status:'unknown',reason:'country_unverified',region:null});
+  const sample={...result,checkedAt:1000000,httpStatus:200,networkError:null};
+  const value={status:'available',region:'US',samples:[sample,sample,sample]};
+  assert(!P.qualified(value,1000000));assert.equal(P.failure(value,1000000).reason,'country_unverified');assert(!P.failure(value,1000000).retryable);
+ }
+});
 test('JSON data extraction handles braces in strings without executing page code',()=>{
  const data={contents:{text:'brace } and quote " and slash \\', nested:{value:'ok'}}};
  for(const marker of ['var ytInitialData = ','ytInitialData=','window["ytInitialData"] = ']) {

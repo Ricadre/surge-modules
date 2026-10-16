@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.20. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.21. Credentials are entered by the user; never bundle secrets.
 (function(root) {
 'use strict';
 const MAX_HTML=2500000;
@@ -44,7 +44,8 @@ function classify(response) {
   if(!data||!data.contents)return result('unknown','page_format');
   const rows=objects(data.contents);if(!rows.length)return result('unknown','page_format');
   const text=rows.flatMap(v=>['text','content','simpleText','label'].map(k=>typeof v[k]==='string'?v[k]:'')).join('\n');
-  if(/(?:YouTube\s+)?Premium\s+(?:is\s+)?(?:not(?:\s+yet)?\s+available|unavailable)\s+in\s+your\s+(?:country|region)|(?:couldn[’']t|cannot|can[’']t)\s+verify\s+your\s+country/i.test(text))return result('unavailable','region_unavailable');
+  if(/(?:YouTube\s+)?Premium\s+(?:is\s+)?(?:not(?:\s+yet)?\s+available|unavailable)\s+in\s+your\s+(?:country|region)/i.test(text))return result('unavailable','region_unavailable');
+  if(/(?:couldn[’']t|cannot|can[’']t)\s+verify\s+your\s+country/i.test(text))return result('unknown','country_unverified');
   const regions=Array.from(html.matchAll(/"INNERTUBE_CONTEXT_GL"\s*:\s*"([A-Z]{2})"/g)).map(m=>m[1]);
   if(!regions.length||new Set(regions).size!==1||['AA','XX','ZZ'].includes(regions[0]))return result('unknown','region_unknown');
   // The full-Premium offer must have a price and an active purchase action.
@@ -117,7 +118,7 @@ function failure(value,now) {
     if(!region(s.region))return result('region_unknown',index);
     if(firstRegion&&s.region!==firstRegion)return result('region_changed',index);
   }
-  const permanent=['region_unavailable','challenge','body','page_format','region_unknown','no_full_premium_offer'];
+  const permanent=['region_unavailable','country_unverified','challenge','body','page_format','region_unknown','no_full_premium_offer'];
   for(let i=0;i<samples.length;i++) {
     const s=samples[i];if(!s)continue;
     if(s.status==='unavailable')return result('region_unavailable',i);
@@ -599,7 +600,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
   const finalists=topDistinct(screened,mode.finalists);
   assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
-  const selected=[];
+  const selected=[],reserveRanking=[],pending=[],rejectedIPs=new Set(),observed=new Map(),initialFinalIPs=new Set();
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
   async function stableOne(e) {
@@ -675,6 +676,7 @@ async function execute(env,opts,pools,poolInfo=null) {
     const leaders=topDistinct(ranking.filter(Boolean),10);
     if(leaders.length===10&&sample.mbps<leaders[9].score) {
       progress.refinement.skippedByBound++;progress.refinement.savedSecondSamples++;
+      pending.push({e,sample,index});
     } else {
       const second=await download(e,mode.sampleBytes,8);await guard();progress.refinement.secondSamples++;
       const samples=[sample,second];
@@ -689,34 +691,46 @@ async function execute(env,opts,pools,poolInfo=null) {
   const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
   progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
   let nextReserve=0;
-  while(selected.length<10&&nextReserve<reserves.length) {
-    await guard();
-    if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
-    const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
-    const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
-    const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
-    progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
-    progress.supplement.refined+=checked.length;
-    progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
-    const ready=checked.filter(e=>e.valid);let done=0;
-    await update('后备节点速度复测',0,ready.length);
-    for(const e of ready) {
-      const row=await refineReserve(e);
-      if(row.valid){selected.push(row);progress.supplement.added++;}
-      else progress.supplement.failedRefine++;
-      progress.premium.passed=selected.length;
-      await update('后备节点速度复测',++done,ready.length);
-    }
-    await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+  function selectRanking() {
+    selected.splice(0,selected.length,...topDistinct(ranking.filter(Boolean).concat(reserveRanking).filter(e=>!rejectedIPs.has(e.ip)),10));
+    progress.premium.passed=selected.length;
+    progress.premium.verified=selected.filter(e=>observed.has(e.ip)&&premium.qualified(observed.get(e.ip).premium,env.now())).length;
+    if(progress.finalSelection)progress.finalSelection.replacements=selected.filter(e=>!initialFinalIPs.has(e.ip)&&observed.has(e.ip)&&premium.qualified(observed.get(e.ip).premium,env.now())).length;
   }
+  async function supplement() {
+    while(selected.length<10&&nextReserve<reserves.length) {
+      await guard();
+      if(progress.supplement.refined>=mode.reserveFinalists){progress.supplement.limited=true;await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);break;}
+      const size=Math.min(4,10-selected.length,mode.reserveFinalists-progress.supplement.refined);
+      const batch=reserves.slice(nextReserve,nextReserve+size);nextReserve+=batch.length;
+      const checked=await qualifyingBatch(batch,'后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+      progress.supplement.examined+=batch.length;progress.supplement.eligible+=checked.length;
+      progress.supplement.refined+=checked.length;
+      progress.supplement.failedRefine+=checked.filter(e=>!e.valid).length;
+      const ready=checked.filter(e=>e.valid);let done=0;
+      await update('后备节点速度复测',0,ready.length);
+      for(const e of ready) {
+        const row=await refineReserve(e);
+        if(row.valid){reserveRanking.push(row);progress.supplement.added++;}
+        else progress.supplement.failedRefine++;
+        selectRanking();
+        await update('后备节点速度复测',++done,ready.length);
+      }
+      await update('后备 Premium 与稳定性检查',progress.supplement.examined,reserves.length);
+    }
+  }
+  await supplement();
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
     'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
-  selected.splice(0,selected.length,...topDistinct(selected,10));
-  const observed=new Array(selected.length),geoCache=new Map();
+  selectRanking();
+  selected.forEach(e=>initialFinalIPs.add(e.ip));
+  const geoCache=new Map();
+  progress.finalSelection={rounds:0,examined:0,rejected:0,expired:0,replacementChecks:0,replacements:0,resumedDownloads:0};
+  let lastFinalError=null;
   function failureText(issue) {
     const labels={network_timeout:'请求超时',network:'连接失败',region_unavailable:'所在地区明确不支持 Premium',
       challenge:'遇到验证或同意页面',body:'响应正文不完整或异常',page_format:'无法识别页面结构',
-      region_unknown:'无法确认地区',no_full_premium_offer:'页面未确认完整 Premium 服务',
+      region_unknown:'无法确认地区',country_unverified:'YouTube 无法验证出口国家',no_full_premium_offer:'页面未确认完整 Premium 服务',
       region_changed:'地区前后不一致',expired:'检测记录已超过 10 分钟',future_time:'检测时间晚于当前时间',
       invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
     return issue.reason==='http'?'HTTP 请求未成功（'+(issue.httpStatus||'未知')+'）':labels[issue.reason]||'检测结果无法确认';
@@ -724,6 +738,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   async function recordFinalFailure(row,index,phase,issue,attempt='initial') {
     const diagnostic={candidate:index+1,endpoint:row.key,phase,attempt,...issue,recoveryAttempted:attempt==='recovery',recovered:false};
     progress.premiumFinalFailures.push(diagnostic);
+    lastFinalError=finalError(index,phase,issue,attempt==='recovery');
     await update('出口与 Premium 最终复核',progress.premium.verified,10);
     return diagnostic;
   }
@@ -734,9 +749,9 @@ async function execute(env,opts,pools,poolInfo=null) {
   async function finishPremium(row,index) {
     row.premium.samples.push(await premiumProbe(row));
     const issue=premium.failure(row.premium,env.now());
-    if(!issue)return;
+    if(!issue)return true;
     const diagnostic=await recordFinalFailure(row,index,'final',issue);
-    if(!issue.retryable)throw finalError(index,'final',issue);
+    if(!issue.retryable)return false;
     // One bounded recovery is permitted only for an unambiguous third-sample
     // transport failure. Old evidence is not reused in the replacement trio.
     diagnostic.recoveryAttempted=true;progress.premium.recoveryAttempts++;
@@ -753,31 +768,77 @@ async function execute(env,opts,pools,poolInfo=null) {
       // stops immediately; this recovery is never recursively retried.
       if(problem&&(!sampleValid||problem.reason!=='incomplete'||attempt===2)) {
         await recordFinalFailure(row,index,'final',problem,'recovery');
-        throw finalError(index,'final',problem,true);
+        return false;
       }
     }
     row.premium=replacement;diagnostic.recovered=true;progress.premium.recovered++;
     await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    return true;
   }
-  await update('出口与 Premium 最终复核',0,10);
-  await pool(selected,4,async(e,index)=>{
-    const row={...e,egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
-    // Refresh only this node's old pair, checking age when its worker reaches
-    // this step. All nodes still need three fresh, matching Premium responses.
-    if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
-      const result=await premiumPair(row);
-      if(result.status!=='available') {
-        const issue=premium.failure(result,env.now());
-        await recordFinalFailure(row,index,'refresh',issue);
-        throw finalError(index,'refresh',issue);
-      }
-      row.premium=result;progress.premium.refreshed++;
+  function rejectFinal(e) {
+    if(!rejectedIPs.has(e.ip)){rejectedIPs.add(e.ip);progress.finalSelection.rejected++;}
+    for(const diagnostic of progress.premiumFinalFailures)if(diagnostic.endpoint===e.key&&!diagnostic.recovered)diagnostic.discarded=true;
+    observed.delete(e.ip);selectRanking();
+  }
+  async function resumeCompetitiveDownloads() {
+    // Previously pruned first samples are bounds, not measured fallback scores.
+    // Removing a finalist can lower the cutoff: finish every newly competitive
+    // second sample (including ties) before admitting a lower-ranked reserve.
+    while(pending.length) {
+      await guard();selectRanking();
+      const {e,sample,index}=pending[0];
+      if(selected.length===10&&sample.mbps<selected[9].score)break;
+      pending.shift();
+      await update('补位第二次下载',progress.finalSelection.resumedDownloads,progress.finalSelection.resumedDownloads+1);
+      const second=await download(e,mode.sampleBytes,8);await guard();
+      progress.refinement.secondSamples++;progress.refinement.skippedByBound--;progress.refinement.savedSecondSamples--;
+      progress.finalSelection.resumedDownloads++;
+      ranking[index]={...e,valid:second.valid,score:Math.min(sample.mbps,second.mbps),samples:[sample,second]};
+      selectRanking();
+      await update('补位第二次下载',progress.finalSelection.resumedDownloads,progress.finalSelection.resumedDownloads);
     }
-    await finishPremium(row,index);
-    observed[index]=row;
-    progress.premium.verified++;await update('出口与 Premium 最终复核',progress.premium.verified,10);
-  });
-  const expectedNames=namedEntries(observed);
+  }
+  // A failed node is removed for this run, rather than repeatedly probing it
+  // until it passes or throwing away every healthy candidate. Each candidate
+  // reaches final validation once; a confirmed trio that expires is also
+  // removed. Cancellation, ownership/network errors and backend conflicts still
+  // abort the run. Reserve retests share the existing 24-candidate budget.
+  for(;;) {
+    await guard();selectRanking();
+    for(const [index,e] of selected.slice().entries()) {
+      const prior=observed.get(e.ip);
+      if(prior&&!premium.qualified(prior.premium,env.now())) {
+        await recordFinalFailure(prior,index,'final',premium.failure(prior.premium,env.now()));
+        progress.finalSelection.expired++;rejectFinal(e);
+      }
+    }
+    await resumeCompetitiveDownloads();await supplement();selectRanking();
+    assert(selected.length===10,(lastFinalError?lastFinalError.message+'；':'')+
+      '复核补位不足 10 个（有效下载候选 '+selected.length+'/10，'+(progress.supplement.limited?'已达共享补选上限':'本轮候选已用尽')+'），保留原订阅');
+    const targets=selected.map((e,index)=>({e,index})).filter(({e})=>!observed.has(e.ip));
+    if(!targets.length) {
+      if(selected.every(e=>premium.qualified(observed.get(e.ip).premium,env.now())))break;
+      continue; // A previously confirmed row may have expired during a download.
+    }
+    progress.finalSelection.rounds++;
+    await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    await pool(targets,4,async({e,index})=>{
+      progress.finalSelection.examined++;
+      if(!initialFinalIPs.has(e.ip))progress.finalSelection.replacementChecks++;
+      const row={...e,premium:{...e.premium,samples:e.premium.samples.slice()},egress:await exitCountry(env,e,baseline.cfg,guard,geoCache)};
+      if(row.premium.samples.some(s=>env.now()-s.checkedAt>premium.MAX_AGE/2)) {
+        const result=await premiumPair(row);
+        if(result.status!=='available') {
+          await recordFinalFailure(row,index,'refresh',premium.failure(result,env.now()));
+          rejectFinal(e);await update('出口与 Premium 最终复核',progress.premium.verified,10);return;
+        }
+        row.premium=result;progress.premium.refreshed++;
+      }
+      if(await finishPremium(row,index))observed.set(e.ip,row);else rejectFinal(e);
+      selectRanking();await update('出口与 Premium 最终复核',progress.premium.verified,10);
+    });
+  }
+  const expectedNames=namedEntries(selected.map(e=>observed.get(e.ip)));
   const proposed=expectedNames.map(e=>e.key+'#'+e.name).join('\n');
   await guard();await update('发布前核对',0,1);
   const fresh=await snapshot();
@@ -787,6 +848,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(expectedNames.every(e=>premium.qualified(e.premium,env.now())),'Premium 检测结果已过期，保留原订阅');
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:light.stats.secondPassed,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,premium:{...progress.premium},selected:expectedNames.map(({ip,port,key,name,egress,premium,score,latency,samples})=>({ip,port,key,name,egress,premium,score,latency,samples})),changed:false,verified:false};
   outcome.supplement={...progress.supplement};
+  outcome.finalSelection={...progress.finalSelection};
   outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
   outcome.lightScreen=light.stats;
@@ -1015,9 +1077,10 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.20 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.21 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const light=s.lightScreen||s.result&&s.result.lightScreen;
+  const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
   const traffic=Math.round(((s.bytes||0)+(premium&&premium.bytes||0))/1000000)+' MB';
   const poolNote=s.poolInfo&&s.poolInfo.source==='cache'?' · 缓存池':s.poolInfo&&s.poolInfo.source==='bundled'?' · 内置池':'';
   if(s.running) {
@@ -1025,6 +1088,7 @@ function progressContent(s,now) {
     const names={'正在登录后台':'登录后台','连通性初筛':'连通检查','低流量连通与延迟初筛':'轻量初筛','稳定性与双次下载复测':'双次复测','YouTube Premium 检测':'Premium 预检','轻量初筛降载复核':'降载复核','稳定性检查':'稳定性检查','双次下载复测':'双次复测','后备稳定性检查':'补选稳定性','YouTube Premium 发布前复核':'Premium 复核','后备 Premium 检测':'后备 Premium','后备节点速度复测':'补选复测','更新 Premium 检测记录':'更新 Premium','保存与订阅验证':'保存并核对','完成，订阅已验证':'订阅已核对'};
     Object.assign(names,{'Premium 与稳定性检查':'预检与稳定性','后备 Premium 与稳定性检查':'后备预检与稳定性','下载复测首轮':'首轮复测','下载复测决选':'决选复测','出口与 Premium 最终复核':'出口与 Premium 复核','轻量候选二次复核':'必要二检'});
     if(light&&Number.isInteger(light.firstTested))names['低流量连通与延迟初筛']='轻量首检';
+    if(finalSelection&&finalSelection.rejected)names['出口与 Premium 最终复核']='Premium 复核与补位';
     const secondPhase=s.stage==='轻量候选二次复核'&&light&&Number.isInteger(light.firstTested);
     const stage=(names[s.stage]||s.stage)+(secondPhase?' · 请求 '+light.secondRequests+' 次':s.total?' '+(s.done||0)+'/'+s.total:'');
     if(age>=STALE_MS)return '可能暂停或中断 · '+stage+'\n'+duration(age)+'无进展 · '+(age>=RESTART_MS?'点上方重新开始':'保持前台稍候');
@@ -1040,6 +1104,7 @@ function progressContent(s,now) {
     if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
     if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
     if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;
+    if(finalSelection&&['出口与 Premium 最终复核','补位第二次下载'].includes(s.stage)&&finalSelection.rejected)return stage+'\n已确认 '+(premium&&premium.verified||0)+'/10 · 淘汰 '+finalSelection.rejected+' · 补入 '+finalSelection.replacements+' · '+traffic;
     if(s.stage==='出口与 Premium 最终复核')return stage+'\n'+(premium&&premium.preflight?'预检后复核 ':'Premium 复核 ')+(premium&&premium.verified||0)+'/10'+(premium&&premium.recoveryAttempts?' · 恢复 '+(premium.recovered||0)+'/'+premium.recoveryAttempts:'')+' · 正文 '+traffic;
     if(s.stage==='YouTube Premium 检测'&&premium&&premium.eligible!==undefined)return stage+'\n待复测 '+premium.eligible+' 个 · 正文 '+traffic;
     if(s.stage==='低流量连通与延迟初筛'||s.stage==='轻量初筛降载复核')return stage+'\n并发 '+(s.lightConcurrency||8)+' · '+duration(now-(s.startedAt||now))+' · 正文 '+traffic;
@@ -1082,7 +1147,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.20';
+const UA='CF-Edge-AutoRank/0.1.21';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -1122,7 +1187,7 @@ function done(title,content,error,notify) {
 }
 function premiumFailureText(value){
   if(!value||typeof value!=='object')return null;
-  const reasons={network_timeout:'请求超时',network:'连接失败',http:'HTTP 响应异常',region_unavailable:'地区不可用',challenge:'出现验证页面',body:'正文不完整或异常',page_format:'页面格式未确认',region_unknown:'地区未确认',no_full_premium_offer:'未确认完整 Premium 购买入口',region_changed:'地区发生变化',expired:'检测记录过期',future_time:'检测时间晚于当前时间',invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
+  const reasons={network_timeout:'请求超时',network:'连接失败',http:'HTTP 响应异常',region_unavailable:'地区不可用',country_unverified:'YouTube 无法验证出口国家',challenge:'出现验证页面',body:'正文不完整或异常',page_format:'页面格式未确认',region_unknown:'地区未确认',no_full_premium_offer:'未确认完整 Premium 购买入口',region_changed:'地区发生变化',expired:'检测记录过期',future_time:'检测时间晚于当前时间',invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
   const candidate=Number.isInteger(value.candidate)&&value.candidate>=1&&value.candidate<=10?value.candidate:'?';
   const phase=value.phase==='refresh'?'更新检测':value.phase==='final'?'发布前复核':'检测';
   const attempt=value.attempt==='recovery'?'恢复复测':'首次';
@@ -1135,6 +1200,7 @@ function premiumFailureText(value){
   if(regions.length)lines.push('地区 '+regions.join(' → '));
   if(Number.isFinite(value.oldestAgeMs)&&value.oldestAgeMs>=0)lines.push('最早记录 '+Math.round(value.oldestAgeMs/1000)+'秒前');
   if(value.recovered===true)lines.push('已恢复');else if(value.recoveryAttempted===true)lines.push('已尝试恢复');
+  if(value.discarded===true)lines.push('本轮已淘汰');
   return lines.join(' · ');
 }
 function statusText(s){
@@ -1152,7 +1218,9 @@ function statusText(s){
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
   const supplement=s.supplement||s.result&&s.result.supplement;
   if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
-  if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+'/10');
+  const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
+  if(finalSelection)lines.push('发布前补位：复核 '+finalSelection.examined+' 个 · 淘汰 '+finalSelection.rejected+' 个 · 补位检查 '+finalSelection.replacementChecks+' 个 · 已补入 '+finalSelection.replacements+' 个 · 补测第二次下载 '+finalSelection.resumedDownloads+' 次');
+  if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+' 个');
   if(premium&&Number.isInteger(premium.recoveryAttempts))lines.push('Premium 恢复：尝试 '+premium.recoveryAttempts+' 个 · 恢复 '+(Number.isInteger(premium.recovered)?premium.recovered:0)+' 个');
   const failures=s.premiumFinalFailures||s.result&&s.result.premiumFinalFailures;
   if(Array.isArray(failures))for(const failure of failures.slice(0,20)){const detail=premiumFailureText(failure);if(detail)lines.push('Premium 最终检测：'+detail);}

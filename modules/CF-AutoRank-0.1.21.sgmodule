@@ -1,0 +1,17 @@
+#!name=Cloudflare 一键优选（预览版）
+#!version=0.1.21
+#!desc=每轮更新候选池；省流1280个IP全部首检，保留当前节点与随机探索，仅省去确定不需要的第二次轻筛；下载候选仍须双检合格，最多160个下载候选先做Premium首检，合格才下载初筛；前24个补足Premium双检与稳定性检查，再按首轮速度上界安排第二轮下载；入选仍须两次有效下载、三次Premium检测。首检8–16并发自适应，二检沿用已验证档位、检查最多4并发、下载复测独占时段；不足10个时按需补选后备，最多额外复测24个。发布前复核失败时淘汰该入口，复用本轮结果按排名补位；必要时补做被省略的第二次下载，后备共用原24个复测上限。最终仍仅发布10个双次下载、Premium三检全部通过的入口；预算内不足10个保留原列表。最终第三次Premium检测的明确连接错误最多尝试一次全新三检恢复，仍要求与原地区一致；失败通知可复制完整诊断。后台直连连接失败时按现有规则重试；测速始终指定被测CF入口。新鲜首检记录可复用，过旧则重新双检；两个面板明确区分下载前首检与发布前复核。省流下载样本约117MB，补选最多另加96MB，Premium前置会增加页面请求，可能更耗时，另计页面及握手开销。
+#!arguments=backend,mode:lite,candidates:160,admin_password
+#!arguments-desc=backend填后台域名，不含协议。mode为lite或full。后台地址与密码由用户填写，参数不随公开脚本发布；密码含双引号、反斜杠或换行时使用b64:加UTF-8 Base64（不是加密）。不要分享填好密码的参数或模块。candidates为下载初筛上限40–1024，默认160；轻量初筛独立固定为省流1280个、完整2560个，不随candidates变化。
+
+[Script]
+CF-AutoRank-Run = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.21.js,timeout=3600,engine=webview,argument="start|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+CF-AutoRank-Status = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.21.js,timeout=5,engine=jsc,argument="status|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Cancel = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.21.js,timeout=5,engine=jsc,argument="cancel|{{{backend}}}|{{{mode}}}|{{{candidates}}}|"
+CF-AutoRank-Verify = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.21.js,timeout=180,engine=webview,argument="verify|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+
+CF-AutoRank-Rename = type=generic,script-path=https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/CF-AutoRank-0.1.21.js,timeout=600,engine=webview,argument="rename|{{{backend}}}|{{{mode}}}|{{{candidates}}}|{{{admin_password}}}"
+
+[Panel]
+CF-AutoRank-Overview = title="Cloudflare 一键优选",content="v0.1.21 模块已载入\n点击开始；进度见下方",style=info,icon=cloud.fill,icon-color=#F48120,script-name=CF-AutoRank-Run,update-interval=1
+CF-AutoRank-Progress = title="Cloudflare 测速进度",content="v0.1.21 模块已载入\n刷新查看进度",style=info,icon=chart.bar.fill,icon-color=#F48120,script-name=CF-AutoRank-Status,update-interval=1

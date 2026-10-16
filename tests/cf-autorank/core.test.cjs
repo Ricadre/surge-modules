@@ -142,10 +142,13 @@ test('a long reserve pass refreshes old Premium pairs without weakening the fina
  assert.equal(f.events.filter(e=>e.stage==='出口与 Premium 最终复核').length,24);
  assert(f.progress.some(p=>p.stage==='出口与 Premium 最终复核'&&p.done===10));
 });
-test('a lost Premium qualification during evidence refresh keeps the original subscription',async()=>{
+test('lost Premium qualification during evidence refresh removes those nodes and fills from tested reserves',async()=>{
  const f=reserveFixture({delayed:true,refreshFailure:true});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 更新检测未通过/);
- assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+ const r=await C.execute(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.finalSelection.rejected,7);assert.equal(r.finalSelection.replacements,7);
+ assert.equal(r.supplement.added,10);assert.equal(f.posts.length,1);
+ assert(r.selected.every(e=>!f.seen.slice(0,7).some(d=>d.startsWith('CF-Probe-'+e.ip+'-'))));
+ assert(r.selected.every(e=>require('../../src/cf-autorank/youtube-premium.js').qualified(e.premium,f.env.now())));
 });
 test('network changes or cancellation during reserve probes stop further work and publication',async()=>{
  for(const kind of ['network','cancel']) {

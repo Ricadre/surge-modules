@@ -99,6 +99,15 @@ test('new final status makes clear that the nodes have already passed preflight'
  assert.equal(card.content,'出口与 Premium 复核 3/10\n预检后复核 3/10 · 正文 110 MB');
  assert.equal(card.content.split('\n').length,2);assert(!card.content.includes('已核对'));
 });
+test('replacement progress stays in the existing panel and shows qualified slots without claiming a completed update',()=>{
+ const state={running:true,stage:'出口与 Premium 最终复核',updatedAt:now,done:9,total:10,bytes:50000000,
+  premium:{verified:9,bytes:30000000,preflight:{passed:120}},finalSelection:{rejected:2,replacements:1}};
+ const card=U.view('status',state,now,'lite');
+ assert.equal(card.content,'Premium 复核与补位 9/10\n已确认 9/10 · 淘汰 2 · 补入 1 · 80 MB');
+ const download=U.view('status',{...state,stage:'补位第二次下载',done:1,total:2},now,'lite');
+ assert.match(download.content,/补位第二次下载 1\/2\n已确认 9\/10/);
+ for(const view of [card,download]){assert.equal(view.title,'Cloudflare 测速进度');assert.equal(view.content.split('\n').length,2);assert(!view.content.includes('已核对'));}
+});
 test('initial coverage and necessary second checks are shown as separate counts in the existing panel',()=>{
  const light={firstTotal:1280,firstTested:128,firstPassed:120,firstRequests:128,secondTested:0,secondPassed:0,secondRequests:0,skippedSecond:0,selectionComplete:false};
  const state={running:true,stage:'低流量连通与延迟初筛',done:128,total:1280,startedAt:now-30000,updatedAt:now,bytes:0,lightConcurrency:16,lightScreen:light};
@@ -130,5 +139,5 @@ test('second-check cancellation and downshift retain truthful scope and old reco
  assert.equal(backoff.content,'降载复核 12/64\n首检覆盖 128/1280 · 并发 8');
  const legacy=U.view('status',{...state,stage:'低流量连通与延迟初筛',done:128,total:1280,lightScreen:{maxConcurrency:16,backoffs:0,rechecked:0},lightConcurrency:16},now,'lite');
  assert.match(legacy.content,/轻量初筛 128\/1280/);assert(!legacy.content.includes('undefined'));
- assert.match(U.view('status',{},now,'lite').content,/v0\.1\.20 已加载/);
+ assert.match(U.view('status',{},now,'lite').content,/v0\.1\.21 已加载/);
 });

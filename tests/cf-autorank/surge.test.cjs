@@ -477,7 +477,7 @@ test('failed-run notification copies its complete saved summary while the visibl
  assert.equal(n.body,s.message);assert(!n.body.includes('各阶段耗时'));assert(n.options.text.length>n.body.length);
  assert(!r.output.content.includes('各阶段耗时'));assert.equal(r.writes.length,0);
 });
-test('final Premium timeout diagnostics survive failed recovery and are copied without raw private data',async()=>{
+test('final timeout diagnostics survive failed recovery and successful replacement without raw private data',async()=>{
  const key='CFEdgeRank_example.net';let target,finalCalls=0;
  const privateURL='https://private.example/credential?token='+('f'.repeat(32));
  const raw='timeout '+privateURL+' local-secret 11111111-1111-4111-8111-111111111111';
@@ -488,16 +488,17 @@ test('final Premium timeout diagnostics survive failed recovery and are copied w
   if(options['policy-descriptor']===target){finalCalls++;return {error:raw,data:html};}
  }});
  const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
- assert.equal(r.writes.length,0);assert.equal(finalCalls,2);
- assert.equal(s.premium.recoveryAttempts,1);assert.equal(s.premium.recovered,0);
- assert.equal(s.premiumFinalFailures.length,2);assert.equal(s.premiumFinalFailures[0].reason,'network_timeout');
- assert.equal(s.premiumFinalFailures[1].attempt,'recovery');
- assert.match(n.options.text,/停止阶段：出口与 Premium 最终复核/);
+ assert.equal(r.writes.length,1);assert.equal(finalCalls,2);assert(s.result.verified);
+ assert.equal(s.result.premium.recoveryAttempts,1);assert.equal(s.result.premium.recovered,0);
+ assert.equal(s.result.premiumFinalFailures.length,2);assert.equal(s.result.premiumFinalFailures[0].reason,'network_timeout');
+ assert.equal(s.result.premiumFinalFailures[1].attempt,'recovery');
+ assert.match(n.options.text,/发布前补位：.*淘汰 1 个.*已补入 1 个/);
  assert.match(n.options.text,/Premium 恢复：尝试 1 个 · 恢复 0 个/);
  assert.match(n.options.text,/Premium 最终检测：候选 \d+ · 发布前复核 \/ 首次 · 请求超时/);
  assert.match(n.options.text,/第 3 检/);assert.match(n.options.text,/第 1 检/);
  assert.match(n.options.text,/发布前复核 \/ 恢复复测 · 请求超时/);
- assert.match(n.options.text,/恢复三检失败/);assert(!n.body.includes('Premium 最终检测：'));
+ assert.match(n.options.text,/本轮已淘汰/);assert(!n.body.includes('Premium 最终检测：'));
+ assert(!s.result.selected.some(e=>target.startsWith('CF-Probe-'+e.ip+'-')));
  const exposed=JSON.stringify([r.logs,r.store,r.notifications,r.output]);
  for(const secret of [privateURL,html,'private-premium-response','local-secret','f'.repeat(32),'11111111-1111-4111-8111-111111111111'])assert(!exposed.includes(secret));
  assert(!/https?:\/\//.test(n.options.text));
@@ -510,8 +511,9 @@ test('final HTTP rejection has a safe status diagnostic and never attempts trans
   if(options['policy-descriptor']===target){finalCalls++;return {status:403,data:'<html>private-rejection-body</html>'};}
  }});
  const s=JSON.parse(r.store[key]),n=r.notifications.at(-1);
- assert.equal(finalCalls,1);assert.equal(r.writes.length,0);assert.equal(s.premium.recoveryAttempts,0);
- assert.equal(s.premiumFinalFailures[0].reason,'http');assert.equal(s.premiumFinalFailures[0].httpStatus,403);
+ assert.equal(finalCalls,1);assert.equal(r.writes.length,1);assert(s.result.verified);assert.equal(s.result.premium.recoveryAttempts,0);
+ assert.equal(s.result.premiumFinalFailures[0].reason,'http');assert.equal(s.result.premiumFinalFailures[0].httpStatus,403);
+ assert(s.result.premiumFinalFailures[0].discarded);assert.equal(s.result.finalSelection.replacements,1);
  assert.match(n.options.text,/HTTP 403/);assert(!JSON.stringify([r.store,r.notifications,r.logs]).includes('private-rejection-body'));
 });
 test('a recovered final transport failure remains visible in the successful clipboard summary',async()=>{

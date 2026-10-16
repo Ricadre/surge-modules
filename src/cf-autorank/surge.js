@@ -12,7 +12,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.20';
+const UA='CF-Edge-AutoRank/0.1.21';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -52,7 +52,7 @@ function done(title,content,error,notify) {
 }
 function premiumFailureText(value){
   if(!value||typeof value!=='object')return null;
-  const reasons={network_timeout:'请求超时',network:'连接失败',http:'HTTP 响应异常',region_unavailable:'地区不可用',challenge:'出现验证页面',body:'正文不完整或异常',page_format:'页面格式未确认',region_unknown:'地区未确认',no_full_premium_offer:'未确认完整 Premium 购买入口',region_changed:'地区发生变化',expired:'检测记录过期',future_time:'检测时间晚于当前时间',invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
+  const reasons={network_timeout:'请求超时',network:'连接失败',http:'HTTP 响应异常',region_unavailable:'地区不可用',country_unverified:'YouTube 无法验证出口国家',challenge:'出现验证页面',body:'正文不完整或异常',page_format:'页面格式未确认',region_unknown:'地区未确认',no_full_premium_offer:'未确认完整 Premium 购买入口',region_changed:'地区发生变化',expired:'检测记录过期',future_time:'检测时间晚于当前时间',invalid_time:'检测时间无效',incomplete:'检测记录不完整'};
   const candidate=Number.isInteger(value.candidate)&&value.candidate>=1&&value.candidate<=10?value.candidate:'?';
   const phase=value.phase==='refresh'?'更新检测':value.phase==='final'?'发布前复核':'检测';
   const attempt=value.attempt==='recovery'?'恢复复测':'首次';
@@ -65,6 +65,7 @@ function premiumFailureText(value){
   if(regions.length)lines.push('地区 '+regions.join(' → '));
   if(Number.isFinite(value.oldestAgeMs)&&value.oldestAgeMs>=0)lines.push('最早记录 '+Math.round(value.oldestAgeMs/1000)+'秒前');
   if(value.recovered===true)lines.push('已恢复');else if(value.recoveryAttempted===true)lines.push('已尝试恢复');
+  if(value.discarded===true)lines.push('本轮已淘汰');
   return lines.join(' · ');
 }
 function statusText(s){
@@ -82,7 +83,9 @@ function statusText(s){
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
   const supplement=s.supplement||s.result&&s.result.supplement;
   if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
-  if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+'/10');
+  const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
+  if(finalSelection)lines.push('发布前补位：复核 '+finalSelection.examined+' 个 · 淘汰 '+finalSelection.rejected+' 个 · 补位检查 '+finalSelection.replacementChecks+' 个 · 已补入 '+finalSelection.replacements+' 个 · 补测第二次下载 '+finalSelection.resumedDownloads+' 次');
+  if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+' 个');
   if(premium&&Number.isInteger(premium.recoveryAttempts))lines.push('Premium 恢复：尝试 '+premium.recoveryAttempts+' 个 · 恢复 '+(Number.isInteger(premium.recovered)?premium.recovered:0)+' 个');
   const failures=s.premiumFinalFailures||s.result&&s.result.premiumFinalFailures;
   if(Array.isArray(failures))for(const failure of failures.slice(0,20)){const detail=premiumFailureText(failure);if(detail)lines.push('Premium 最终检测：'+detail);}
