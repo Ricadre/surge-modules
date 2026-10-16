@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.21. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.22. Credentials are entered by the user; never bundle secrets.
 (function(root) {
 'use strict';
 const MAX_HTML=2500000;
@@ -325,10 +325,47 @@ function downloadValid(result,start,size) {
   const end=start+size-1, match=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(header(result.headers,'Content-Range'));
   const timed=!!result.error && /timeout|timed out|超时/i.test(String(result.error));
   const bytes=result.bytes||0;
-  const valid=result.status===206&&match&&Number(match[1])===start&&Number(match[2])===end&&Number(match[3])>end&&
+  const rangeOK=!!match&&Number(match[1])===start&&Number(match[2])===end&&Number(match[3])>end;
+  const valid=result.status===206&&rangeOK&&
     bytes>=Math.min(65536,size)&&bytes<=size&&(!result.error||timed)&&result.ms>0&&(!result.error?bytes===size:true);
+  const reason=valid?null:result.status&&result.status!==206?'http':result.status===206&&!rangeOK?'range':
+    timed&&!bytes?'timeout_empty':result.error&&!timed?
+    (/response size limit/.test(String(result.error))?'size_limit':'network'):result.status!==206?'http':
+    bytes>size?'oversize':!bytes?'empty_body':bytes<Math.min(65536,size)?'too_small':
+    !result.error&&bytes!==size?'truncated':!(result.ms>0)?'timing':'invalid';
   return {valid:!!valid,bytes,ms:result.ms,status:result.status||0,partial:!!valid&&bytes<size,
-    mbps:valid?Number((bytes*8/result.ms/1000).toFixed(3)):0};
+    mbps:valid?Number((bytes*8/result.ms/1000).toFixed(3)):0,reason,timedOut:timed};
+}
+// A single timed-out $httpClient request may return no headers or partial body.
+// Full mode retains completed 2 MB ranges within one 8 MB / 8 s sample window.
+// Failed tails are never estimated; their time still lowers the sample score.
+async function chunkedDownload(request,size,seconds,chunkSize,now,guard) {
+  const start=now(),budgetMs=seconds*1000;
+  let bytes=0,requestMs=0,last=null,reason=null,termination='complete';
+  const chunks={attempted:0,complete:0,partial:0,emptyTimeouts:0};
+  const elapsed=()=>Math.max(0,now()-start,requestMs);
+  while(bytes<size) {
+    await guard();
+    const remaining=Math.floor((budgetMs-elapsed())/1000);
+    if(remaining<1){termination='deadline';break;}
+    const partSize=Math.min(chunkSize,size-bytes);
+    last=await request(partSize,remaining);await guard();
+    chunks.attempted++;bytes+=last.bytes;requestMs+=last.ms||0;
+    if(!last.valid) {
+      if(last.reason==='timeout_empty')chunks.emptyTimeouts++;
+      if(last.reason==='timeout_empty'&&bytes>=Math.min(65536,size)){
+        termination='timeout';break;
+      }
+      reason=last.reason;termination='failed';break;
+    }
+    if(last.partial){chunks.partial++;termination='timeout';break;}
+    chunks.complete++;
+  }
+  const ms=elapsed(),valid=!reason&&bytes>=Math.min(65536,size)&&bytes<=size&&ms>0;
+  if(!valid&&!reason)reason=last&&last.reason||'empty_body';
+  return {valid,bytes,ms,status:valid?206:last&&last.status||0,lastStatus:last&&last.status||0,
+    partial:valid&&bytes<size,mbps:valid?Number((bytes*8/ms/1000).toFixed(3)):0,
+    reason,termination,chunks,requestedBytes:size};
 }
 async function pool(items,n,fn) {
   let i=0,failure=null,failed=false;
@@ -523,7 +560,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   const samplingPools=pools,official=poolInfo?poolInfo.official:[];
   pools=pools.concat(official);
   const mode=MODES[opts.mode]; const runId=env.id(); const start=env.now(); let publishing=false;
-  const progress={version:1,runId,host:opts.host,mode:opts.mode,startedAt:start,updatedAt:start,stage:'准备',done:0,total:0,bytes:0};
+  const progress={version:1,runId,host:opts.host,mode:opts.mode,downloadCandidateLimit:opts.limit,startedAt:start,updatedAt:start,stage:'准备',done:0,total:0,bytes:0};
   const initialNetwork=env.networkKey();
   const timings={};let timingStage='准备',timingStart=start;
   function timingSnapshot(){return {...timings,[timingStage]:(timings[timingStage]||0)+Math.max(0,env.now()-timingStart)};}
@@ -588,13 +625,29 @@ async function execute(env,opts,pools,poolInfo=null) {
   const premiumEntries=preflight.filter(Boolean);
   assert(premiumEntries.length>=10,'Premium 首检合格 '+premiumEntries.length+'/10，不足 10 个，未开始下载测速，保留原订阅');
   progress.downloadTestedCount=premiumEntries.length;
+  const downloadStats=()=>({samples:0,valid:0,partial:0,requests:0,emptyTimeouts:0,failures:{},http:{}});
+  progress.downloadDiagnostics={screen:downloadStats(),retest:downloadStats(),examples:[]};
   async function download(e,size,seconds) {
-    await guard(); const offset=Math.floor(env.random()*150000000);
-    const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout:seconds,binary:true,
-      headers:{Range:'bytes='+offset+'-'+(offset+size-1),'Accept-Encoding':'identity','Cache-Control':'no-cache'}});
-    progress.bytes+=r.bytes||0;
-    assert(r.status!==200,'下载源未遵守 Range，已停止，保留原订阅');
-    return downloadValid(r,offset,size);
+    async function request(partSize,timeout) {
+      await guard();const offset=Math.floor(env.random()*150000000);
+      const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout,binary:true,
+        headers:{Range:'bytes='+offset+'-'+(offset+partSize-1),'Accept-Encoding':'identity','Cache-Control':'no-cache'}});
+      progress.bytes+=r.bytes||0;await guard();
+      return downloadValid(r,offset,partSize);
+    }
+    const result=size>2000000?await chunkedDownload(request,size,seconds,2000000,env.now,guard):await request(size,seconds);
+    const phase=size===mode.screenBytes?'screen':'retest',stats=progress.downloadDiagnostics[phase];
+    stats.samples++;stats.requests+=result.chunks?result.chunks.attempted:1;
+    stats.emptyTimeouts+=result.chunks?result.chunks.emptyTimeouts:result.reason==='timeout_empty'?1:0;
+    if(result.valid){stats.valid++;if(result.partial)stats.partial++;}
+    else {
+      stats.failures[result.reason]=(stats.failures[result.reason]||0)+1;
+      stats.http[result.status]=(stats.http[result.status]||0)+1;
+      if(progress.downloadDiagnostics.examples.filter(e=>e.phase===phase).length<3)progress.downloadDiagnostics.examples.push({phase,requestedBytes:size,
+        reason:result.reason,status:result.status,bytes:result.bytes,ms:result.ms,chunks:result.chunks?result.chunks.attempted:1});
+    }
+    if(result.status===200){await update(progress.stage,progress.done,progress.total);throw new Error('下载源未遵守 Range，已停止，保留原订阅');}
+    return result;
   }
   done=0;const screened=[];await update('下载初筛',0,premiumEntries.length);
   await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
@@ -603,6 +656,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   const selected=[],reserveRanking=[],pending=[],rejectedIPs=new Set(),observed=new Map(),initialFinalIPs=new Set();
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
+  progress.stability={tested:0,passed:0,failed:0};
   async function stableOne(e) {
     const checks=[];
     for(let n=0;n<3;n++) {
@@ -610,7 +664,9 @@ async function execute(env,opts,pools,poolInfo=null) {
       checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
     }
     await guard();
-    return {...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
+    const valid=checks.length===6&&checks.every(x=>x.valid);
+    progress.stability.tested++;progress.stability[valid?'passed':'failed']++;
+    return {...e,checks,valid,latency:median(checks.map(x=>x.ms))};
   }
   async function refineReserve(e) {
     const samples=[await download(e,mode.sampleBytes,8)];progress.refinement.reserveFirstSamples++;
@@ -721,7 +777,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   }
   await supplement();
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
-    'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
+    '综合检查合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，保留原订阅；具体原因见下载与 Premium 诊断');
   selectRanking();
   selected.forEach(e=>initialFinalIPs.add(e.ip));
   const geoCache=new Map();
@@ -851,6 +907,8 @@ async function execute(env,opts,pools,poolInfo=null) {
   outcome.finalSelection={...progress.finalSelection};
   outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
+  outcome.downloadDiagnostics=progress.downloadDiagnostics;
+  outcome.stability={...progress.stability};
   outcome.lightScreen=light.stats;
   function finishOutcome(){outcome.stageTimings=timingSnapshot();outcome.finishedAt=env.now();return outcome;}
   outcome.poolInfo=poolInfo;
@@ -954,7 +1012,7 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
+const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,chunkedDownload,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);
 
@@ -1077,7 +1135,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.21 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.22 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const light=s.lightScreen||s.result&&s.result.lightScreen;
   const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
@@ -1147,7 +1205,7 @@ const PROGRESS_WRITE_MS=750;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.21';
+const UA='CF-Edge-AutoRank/0.1.22';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(key=stateKey){
   const begin=Date.now();storageDiagnostics.reads++;
@@ -1206,6 +1264,7 @@ function premiumFailureText(value){
 function statusText(s){
   if(!s.stage)return '尚未运行。先在模块参数填写后台密码，再手动点击开始。';
   const lines=[s.stage+(s.total?' '+(s.done||0)+'/'+s.total:''), '已接收下载正文约 '+((s.bytes||0)/1000000).toFixed(1)+' MB'];
+  if(['lite','full'].includes(s.mode))lines.push('本轮档位：'+(s.mode==='full'?'完整':'省流')+' · '+core.scanCount(s.mode)+' 个轻筛入口 · 每次复测最多 '+core.MODES[s.mode].sampleBytes/1000000+' MB / 8 秒'+(s.mode==='full'&&(s.downloadDiagnostics||s.result&&s.result.downloadDiagnostics)?'（2 MB 分段）':''));
   if(s.startedAt)lines.push('本轮总耗时：'+ui.duration(Math.max(0,(s.running?Date.now():s.updatedAt||Date.now())-s.startedAt)));
   const premium=s.premium||s.result&&s.result.premium;
   if(premium&&premium.preflight){
@@ -1214,10 +1273,27 @@ function statusText(s){
     lines.push('入围 Premium 二检：复用新鲜首检 '+p.reused+' 个 · 首检过旧重新双检 '+p.refreshed+' 个');
   }
   if(premium&&premium.eligible!==undefined)lines.push('Premium 预检：'+premium.eligible+'/'+premium.tested+' 个通过');
-  if(premium)lines.push('Premium：通过 '+premium.passed+'/10 · 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
+  if(premium)lines.push('综合入选：'+premium.passed+'/10 · Premium 发布前复核 '+premium.verified+'/10 · 检测正文约 '+(premium.bytes/1000000).toFixed(1)+' MB');
   if(premium)lines.push('Premium 未入选：地区不可用 '+premium.unavailable+' · 未确认 '+premium.unknown+' · 地区不一致 '+premium.inconsistent);
+  const stability=s.stability||s.result&&s.result.stability;
+  if(stability)lines.push('稳定性检查：通过 '+stability.passed+'/'+stability.tested+' · 未通过 '+stability.failed);
+  const downloads=s.downloadDiagnostics||s.result&&s.result.downloadDiagnostics;
+  const reasons={timeout_empty:'超时且未返回正文',size_limit:'响应大小限制',network:'连接错误',http:'HTTP 状态异常',range:'Content-Range 不符',oversize:'正文超出请求范围',empty_body:'未返回二进制正文',too_small:'有效正文不足',truncated:'正文不完整',timing:'耗时无效',invalid:'响应无法确认'};
+  if(downloads) {
+    for(const phase of ['screen','retest']){
+      const d=downloads[phase];if(!d||!d.samples)continue;
+      lines.push((phase==='screen'?'下载初筛':'下载复测')+'样本：有效 '+d.valid+'/'+d.samples+' · 限时样本 '+d.partial+' · HTTP 请求 '+d.requests+' · 空正文超时 '+d.emptyTimeouts);
+      const failures=Object.entries(d.failures||{}).filter(([key])=>Object.prototype.hasOwnProperty.call(reasons,key)).map(([key,count])=>reasons[key]+' '+Number(count));
+      if(failures.length)lines.push('下载失败分类（'+(phase==='screen'?'初筛':'复测')+'）：'+failures.join(' · ')+'；HTTP '+Object.entries(d.http||{}).filter(([status])=>/^(0|[1-5]\d\d)$/.test(status)).map(([status,count])=>(status==='0'?'无响应':status)+' × '+Number(count)).join(' / '));
+    }
+    for(const e of (Array.isArray(downloads.examples)?downloads.examples:[]).slice(0,6)){
+      if(!Object.prototype.hasOwnProperty.call(reasons,e.reason))continue;
+      lines.push('下载失败示例：'+(e.phase==='retest'?'复测':'初筛')+' · '+reasons[e.reason]+' · HTTP '+(Number(e.status)||0)+' · 请求 '+Number(e.requestedBytes)+' B / 收到 '+Number(e.bytes)+' B · '+Math.round(Number(e.ms))+' ms');
+    }
+    if(downloads.retest&&downloads.retest.emptyTimeouts||downloads.screen&&downloads.screen.emptyTimeouts)lines.push('流量说明：超时未返回的正文无法计数；已接收正文统计不等于实际网络耗流。');
+  }
   const supplement=s.supplement||s.result&&s.result.supplement;
-  if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 复测未通过 '+supplement.failedRefine);
+  if(supplement&&supplement.examined)lines.push('后备补选：已检测 '+supplement.examined+'/'+supplement.available+' · 复测名额 '+supplement.refined+'/'+supplement.limit+' · 补入 '+supplement.added+' · 稳定性或下载未通过 '+supplement.failedRefine);
   const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
   if(finalSelection)lines.push('发布前补位：复核 '+finalSelection.examined+' 个 · 淘汰 '+finalSelection.rejected+' 个 · 补位检查 '+finalSelection.replacementChecks+' 个 · 已补入 '+finalSelection.replacements+' 个 · 补测第二次下载 '+finalSelection.resumedDownloads+' 次');
   if(premium&&premium.refreshed)lines.push('已更新 Premium 检测记录：'+premium.refreshed+' 个');
@@ -1252,7 +1328,7 @@ function request(options,method) {
     const begin=Date.now();
     $httpClient[method.toLowerCase()](options,(error,response,data)=>{
       try { touch(requireOwner()); } catch (e) {reject(e);return;}
-      const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':'request failed'):null;
+      const safeError=error?(/timeout|timed out|超时/i.test(String(error))?'timeout':/body too large|response too large|maximum (?:response |body )?size|size limit|exceeds? (?:the )?(?:maximum|size|limit)/i.test(String(error))?'response size limit':'request failed'):null;
       const bytes=data&&typeof data.byteLength==='number'?data.byteLength:data&&Array.isArray(data)?data.length:0;
       resolve({error:safeError,status:response?Number(response.status):0,headers:response&&response.headers||{},data,bytes,ms:Math.max(1,Date.now()-begin)});
     });

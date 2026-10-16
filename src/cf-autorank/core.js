@@ -183,10 +183,47 @@ function downloadValid(result,start,size) {
   const end=start+size-1, match=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(header(result.headers,'Content-Range'));
   const timed=!!result.error && /timeout|timed out|超时/i.test(String(result.error));
   const bytes=result.bytes||0;
-  const valid=result.status===206&&match&&Number(match[1])===start&&Number(match[2])===end&&Number(match[3])>end&&
+  const rangeOK=!!match&&Number(match[1])===start&&Number(match[2])===end&&Number(match[3])>end;
+  const valid=result.status===206&&rangeOK&&
     bytes>=Math.min(65536,size)&&bytes<=size&&(!result.error||timed)&&result.ms>0&&(!result.error?bytes===size:true);
+  const reason=valid?null:result.status&&result.status!==206?'http':result.status===206&&!rangeOK?'range':
+    timed&&!bytes?'timeout_empty':result.error&&!timed?
+    (/response size limit/.test(String(result.error))?'size_limit':'network'):result.status!==206?'http':
+    bytes>size?'oversize':!bytes?'empty_body':bytes<Math.min(65536,size)?'too_small':
+    !result.error&&bytes!==size?'truncated':!(result.ms>0)?'timing':'invalid';
   return {valid:!!valid,bytes,ms:result.ms,status:result.status||0,partial:!!valid&&bytes<size,
-    mbps:valid?Number((bytes*8/result.ms/1000).toFixed(3)):0};
+    mbps:valid?Number((bytes*8/result.ms/1000).toFixed(3)):0,reason,timedOut:timed};
+}
+// A single timed-out $httpClient request may return no headers or partial body.
+// Full mode retains completed 2 MB ranges within one 8 MB / 8 s sample window.
+// Failed tails are never estimated; their time still lowers the sample score.
+async function chunkedDownload(request,size,seconds,chunkSize,now,guard) {
+  const start=now(),budgetMs=seconds*1000;
+  let bytes=0,requestMs=0,last=null,reason=null,termination='complete';
+  const chunks={attempted:0,complete:0,partial:0,emptyTimeouts:0};
+  const elapsed=()=>Math.max(0,now()-start,requestMs);
+  while(bytes<size) {
+    await guard();
+    const remaining=Math.floor((budgetMs-elapsed())/1000);
+    if(remaining<1){termination='deadline';break;}
+    const partSize=Math.min(chunkSize,size-bytes);
+    last=await request(partSize,remaining);await guard();
+    chunks.attempted++;bytes+=last.bytes;requestMs+=last.ms||0;
+    if(!last.valid) {
+      if(last.reason==='timeout_empty')chunks.emptyTimeouts++;
+      if(last.reason==='timeout_empty'&&bytes>=Math.min(65536,size)){
+        termination='timeout';break;
+      }
+      reason=last.reason;termination='failed';break;
+    }
+    if(last.partial){chunks.partial++;termination='timeout';break;}
+    chunks.complete++;
+  }
+  const ms=elapsed(),valid=!reason&&bytes>=Math.min(65536,size)&&bytes<=size&&ms>0;
+  if(!valid&&!reason)reason=last&&last.reason||'empty_body';
+  return {valid,bytes,ms,status:valid?206:last&&last.status||0,lastStatus:last&&last.status||0,
+    partial:valid&&bytes<size,mbps:valid?Number((bytes*8/ms/1000).toFixed(3)):0,
+    reason,termination,chunks,requestedBytes:size};
 }
 async function pool(items,n,fn) {
   let i=0,failure=null,failed=false;
@@ -381,7 +418,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   const samplingPools=pools,official=poolInfo?poolInfo.official:[];
   pools=pools.concat(official);
   const mode=MODES[opts.mode]; const runId=env.id(); const start=env.now(); let publishing=false;
-  const progress={version:1,runId,host:opts.host,mode:opts.mode,startedAt:start,updatedAt:start,stage:'准备',done:0,total:0,bytes:0};
+  const progress={version:1,runId,host:opts.host,mode:opts.mode,downloadCandidateLimit:opts.limit,startedAt:start,updatedAt:start,stage:'准备',done:0,total:0,bytes:0};
   const initialNetwork=env.networkKey();
   const timings={};let timingStage='准备',timingStart=start;
   function timingSnapshot(){return {...timings,[timingStage]:(timings[timingStage]||0)+Math.max(0,env.now()-timingStart)};}
@@ -446,13 +483,29 @@ async function execute(env,opts,pools,poolInfo=null) {
   const premiumEntries=preflight.filter(Boolean);
   assert(premiumEntries.length>=10,'Premium 首检合格 '+premiumEntries.length+'/10，不足 10 个，未开始下载测速，保留原订阅');
   progress.downloadTestedCount=premiumEntries.length;
+  const downloadStats=()=>({samples:0,valid:0,partial:0,requests:0,emptyTimeouts:0,failures:{},http:{}});
+  progress.downloadDiagnostics={screen:downloadStats(),retest:downloadStats(),examples:[]};
   async function download(e,size,seconds) {
-    await guard(); const offset=Math.floor(env.random()*150000000);
-    const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout:seconds,binary:true,
-      headers:{Range:'bytes='+offset+'-'+(offset+size-1),'Accept-Encoding':'identity','Cache-Control':'no-cache'}});
-    progress.bytes+=r.bytes||0;
-    assert(r.status!==200,'下载源未遵守 Range，已停止，保留原订阅');
-    return downloadValid(r,offset,size);
+    async function request(partSize,timeout) {
+      await guard();const offset=Math.floor(env.random()*150000000);
+      const r=await env.probe({descriptor:descriptor(e,baseline.cfg),method:'GET',url:'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg?cf_rank='+runId+'-'+env.id(),timeout,binary:true,
+        headers:{Range:'bytes='+offset+'-'+(offset+partSize-1),'Accept-Encoding':'identity','Cache-Control':'no-cache'}});
+      progress.bytes+=r.bytes||0;await guard();
+      return downloadValid(r,offset,partSize);
+    }
+    const result=size>2000000?await chunkedDownload(request,size,seconds,2000000,env.now,guard):await request(size,seconds);
+    const phase=size===mode.screenBytes?'screen':'retest',stats=progress.downloadDiagnostics[phase];
+    stats.samples++;stats.requests+=result.chunks?result.chunks.attempted:1;
+    stats.emptyTimeouts+=result.chunks?result.chunks.emptyTimeouts:result.reason==='timeout_empty'?1:0;
+    if(result.valid){stats.valid++;if(result.partial)stats.partial++;}
+    else {
+      stats.failures[result.reason]=(stats.failures[result.reason]||0)+1;
+      stats.http[result.status]=(stats.http[result.status]||0)+1;
+      if(progress.downloadDiagnostics.examples.filter(e=>e.phase===phase).length<3)progress.downloadDiagnostics.examples.push({phase,requestedBytes:size,
+        reason:result.reason,status:result.status,bytes:result.bytes,ms:result.ms,chunks:result.chunks?result.chunks.attempted:1});
+    }
+    if(result.status===200){await update(progress.stage,progress.done,progress.total);throw new Error('下载源未遵守 Range，已停止，保留原订阅');}
+    return result;
   }
   done=0;const screened=[];await update('下载初筛',0,premiumEntries.length);
   await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
@@ -461,6 +514,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   const selected=[],reserveRanking=[],pending=[],rejectedIPs=new Set(),observed=new Map(),initialFinalIPs=new Set();
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
+  progress.stability={tested:0,passed:0,failed:0};
   async function stableOne(e) {
     const checks=[];
     for(let n=0;n<3;n++) {
@@ -468,7 +522,9 @@ async function execute(env,opts,pools,poolInfo=null) {
       checks.push(await connect(e,'youtube'));if(!checks[checks.length-1].valid)break;
     }
     await guard();
-    return {...e,checks,valid:checks.length===6&&checks.every(x=>x.valid),latency:median(checks.map(x=>x.ms))};
+    const valid=checks.length===6&&checks.every(x=>x.valid);
+    progress.stability.tested++;progress.stability[valid?'passed':'failed']++;
+    return {...e,checks,valid,latency:median(checks.map(x=>x.ms))};
   }
   async function refineReserve(e) {
     const samples=[await download(e,mode.sampleBytes,8)];progress.refinement.reserveFirstSamples++;
@@ -579,7 +635,7 @@ async function execute(env,opts,pools,poolInfo=null) {
   }
   await supplement();
   assert(selected.length===10 && new Set(selected.map(x=>x.ip)).size===10,
-    'Premium 合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，不足 10 个，保留原订阅');
+    '综合检查合格 '+selected.length+'/10，'+(progress.supplement.limited?'补选复测达到上限':'后备候选已用尽')+'，保留原订阅；具体原因见下载与 Premium 诊断');
   selectRanking();
   selected.forEach(e=>initialFinalIPs.add(e.ip));
   const geoCache=new Map();
@@ -709,6 +765,8 @@ async function execute(env,opts,pools,poolInfo=null) {
   outcome.finalSelection={...progress.finalSelection};
   outcome.premiumFinalFailures=progress.premiumFinalFailures.map(d=>({...d,regions:d.regions.slice()}));
   outcome.refinement={...progress.refinement};
+  outcome.downloadDiagnostics=progress.downloadDiagnostics;
+  outcome.stability={...progress.stability};
   outcome.lightScreen=light.stats;
   function finishOutcome(){outcome.stageTimings=timingSnapshot();outcome.finishedAt=env.now();return outcome;}
   outcome.poolInfo=poolInfo;
@@ -812,6 +870,6 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
+const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,chunkedDownload,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);

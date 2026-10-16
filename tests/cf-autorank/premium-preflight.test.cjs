@@ -92,7 +92,7 @@ test('older first samples are replaced by two new same-region samples before lar
 
 test('a changed region during old-sample renewal cannot erase the initial region observation',async()=>{
  const f=scenario({oldInitial:true,reply:({ordinal})=>ordinal>1?{data:premiumPage({region:'JP'})}:null});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 0\/10/);
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/综合检查合格 0\/10/);
  assert(!f.events.some(e=>e.kind==='full'));assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  assert.equal(f.progress.at(-1).premium.inconsistent,160);assert.equal(f.metrics().active,0);
 });
@@ -100,7 +100,7 @@ test('a changed region during old-sample renewal cannot erase the initial region
 test('first-check success never bypasses a failed second check or the strict final publication check',async()=>{
  for(const ordinal of [2,3]){
   const f=scenario({reply:e=>e.ordinal===ordinal?blocked:null});
-  await assert.rejects(()=>C.execute(f.env,f.opts,pools),ordinal===2?/Premium 合格 0\/10/:/Premium 发布前复核未通过.*明确不支持/);
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),ordinal===2?/综合检查合格 0\/10/:/Premium 发布前复核未通过.*明确不支持/);
   if(ordinal===2)assert(!f.events.some(e=>e.kind==='full'));
   else assert(f.progress.at(-1).premiumFinalFailures.every(e=>e.reason==='region_unavailable'&&!e.retryable));
   assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);assert.equal(f.metrics().active,0);

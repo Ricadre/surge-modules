@@ -603,3 +603,32 @@ test('old stored light-screen summaries remain readable without invented first o
  assert(!text.includes('轻量首检：'));assert(!text.includes('轻量二检：'));assert(!text.includes('undefined'));assert(!text.includes('NaN'));
  assert.equal(r.requests.length,0);
 });
+
+test('failed full downloads report the active mode and safe causes separately from successful Premium checks',async()=>{
+ const marker='fixture-private-token',raw='response too large '+marker+' https://private.example/path';
+ const r=await run('start|example.net|full|40|local-secret','button',{}, {respond:({options})=>{
+  const range=options.headers&&options.headers.Range&&/bytes=(\d+)-(\d+)/.exec(options.headers.Range);
+  if(range&&Number(range[2])-Number(range[1])+1>524288)return {error:raw,status:0,data:''};
+ }});
+ const s=JSON.parse(r.store['CFEdgeRank_example.net']),text=r.notifications.at(-1).options.text;
+ assert.equal(s.stage,'未完成');assert(s.premium.eligible>=10);assert(s.stability.passed>=10);
+ assert.equal(s.downloadDiagnostics.retest.valid,0);
+ assert.equal(s.downloadDiagnostics.retest.failures.size_limit,s.downloadDiagnostics.retest.samples);
+ assert.match(text,/本轮档位：完整 · 2560 个轻筛入口/);assert.match(text,/Premium 预检：40\/40/);
+ assert.match(text,/综合入选：0\/10/);assert(!text.includes('Premium：通过 0/10'));
+ assert.match(text,/下载失败分类（复测）：响应大小限制/);assert.match(text,/下载失败示例：复测/);
+ assert(!JSON.stringify([r.logs,r.store,r.notifications]).includes(marker));assert.equal(r.writes.length,0);
+});
+test('download timeout diagnostics keep unknown traffic separate and ignore untrusted diagnostic strings',async()=>{
+ const marker='fixture-private-value',key='CFEdgeRank_example.net';
+ const state={stage:'未完成',mode:'lite',message:'综合检查不足十个',downloadDiagnostics:{retest:{samples:2,valid:0,partial:0,requests:2,emptyTimeouts:2,failures:{timeout_empty:2,[marker]:1},http:{0:2,[marker]:1}},examples:[{phase:'retest',reason:'timeout_empty',status:0,requestedBytes:2000000,bytes:0,ms:8000},{reason:marker,phase:marker,bytes:marker}]}};
+ const r=await run('status|example.net|lite|40|','button',{[key]:JSON.stringify(state)}),text=r.logs.join('\n');
+ assert.match(text,/本轮档位：省流 · 1280/);assert.match(text,/超时且未返回正文/);
+ assert.match(text,/未返回的正文无法计数/);assert(!text.includes(marker));assert.equal(r.requests.length,0);
+});
+test('older full-mode records never claim that their downloads used the new chunk sampler',async()=>{
+ const key='CFEdgeRank_example.net',s={stage:'未完成',mode:'full',message:'旧记录'};
+ const r=await run('status|example.net|full|40|','button',{[key]:JSON.stringify(s)});
+ assert.match(r.logs.join('\n'),/本轮档位：完整/);assert(!r.logs.join('\n').includes('2 MB 分段'));
+ assert.equal(r.requests.length,0);
+});

@@ -6,7 +6,7 @@
 
 | 模块 | 当前状态 | 远程地址 |
 | --- | --- | --- |
-| Cloudflare 一键优选 | 0.1.21 · 1280 个轻量初筛 → 160 候选先查 Premium → 下载与复核 → 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
+| Cloudflare 一键优选 | 0.1.22 · 1280 个轻量初筛 → 160 候选先查 Premium → 下载与复核 → 合格前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
@@ -21,6 +21,8 @@
 后台上游为 **[cmliu/edgetunnel](https://github.com/cmliu/edgetunnel)**，提供 Cloudflare 隧道、管理面板与订阅；本仓库实现 Surge 端的测速、排名、出口国旗和自动回写。具体分工见[上游项目说明](docs/cf-autorank.md#上游项目与本模块的关系)。
 
 手动刷新主面板：**更新池与备份 → 1280 个全部首检与必要第二检 → 最多 160 候选的 Premium 首检 → 合格者下载初筛 → 前 24 个补足 Premium 双检与稳定性检查 → 独占两段下载复测，不足时按需补选后备 → 出口与 Premium 发布前复核，失败则本轮淘汰补位 → 十个完整合格后保存并验证订阅**。0.1.20 将首次 Premium 检测提前到任何下载样本之前，不可用或未确认入口不下载；新鲜首检用于入围双检，超过 5 分钟则重新双检，发布前第三检仍保留。首检页面请求增加，不能保证整轮更快或总流量更低。0.1.19 保留全部首检覆盖及约 20% 随机探索，只省略确定不需要的第二次轻量检测，进入下载阶段仍须双检合格。首检自适应 8～16 并发，二检沿用首检最后实际验证的档位；Premium、稳定性和出口检查按节点串联、合计最多 4 并发，下载复测不与其他探测同时运行。首轮大下载后按速度上界安排第二轮，只省去已确定无法入选的第二次下载；平分继续复测，最终十个仍以两次有效样本中较低速度排名。后备先过 Premium 双检才做下载复测，额外复测最多 24 个，凑齐即停；0.1.21 起复核失败入口本轮淘汰，复用已测结果并按排名补位；被省略的第二次下载在需要时补测，后备共用原有 24 个复测预算。最终不足 10 个时保留原订阅；检测不验证会员账号资格。后台连接先直连，失败时按现有 Surge 规则重试；测速始终指定被测 CF 入口。成功后手动刷新原 CF 订阅。进度面板及自动刷新只读状态，不启动测速。0.1.18 增加 Premium 最终复核的具体失败原因与一次有条件的连接错误恢复；失败通知也可复制完整耗时与诊断摘要，地区和三检要求保持不变。完整顺序与请求路径见[操作流程](docs/cf-autorank.md#点击面板刷新后会发生什么)。
+
+0.1.22 让完整档保留已完成分段的数据，避免末尾超时使整次样本作废：8 MB / 8 秒内按 2 MB 分段采样，两次独立复测与 Premium 要求保留。日志分别显示实际档位、Premium、稳定性及下载失败原因；省流档采样不变。详见[完整档采样与诊断](docs/cf-autorank.md#0122-完整档分段采样与下载诊断)。
 
 以后统一使用[固定模块地址](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/CF-AutoRank.sgmodule)。从旧版本地址迁移一次后，在 Surge 中更新同一个模块即可，后台参数保存在本机。带版本号的文件仅用于复现和回退；内部 JS 引用随模块更新。
 

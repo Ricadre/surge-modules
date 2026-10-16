@@ -139,5 +139,5 @@ test('second-check cancellation and downshift retain truthful scope and old reco
  assert.equal(backoff.content,'降载复核 12/64\n首检覆盖 128/1280 · 并发 8');
  const legacy=U.view('status',{...state,stage:'低流量连通与延迟初筛',done:128,total:1280,lightScreen:{maxConcurrency:16,backoffs:0,rechecked:0},lightConcurrency:16},now,'lite');
  assert.match(legacy.content,/轻量初筛 128\/1280/);assert(!legacy.content.includes('undefined'));
- assert.match(U.view('status',{},now,'lite').content,/v0\.1\.21 已加载/);
+ assert.match(U.view('status',{},now,'lite').content,/v0\.1\.22 已加载/);
 });

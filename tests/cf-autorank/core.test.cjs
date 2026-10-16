@@ -106,7 +106,7 @@ test('seven initial qualifiers are filled from reserves then sorted by full rete
   const f=reserveFixture({mode}),r=await C.execute(f.env,f.opts,pools);
   assert(r.verified);assert.equal(f.posts.length,1);assert.equal(f.seen.length,27);
   assert.equal(r.supplement.examined,3);assert.equal(r.supplement.refined,3);assert.equal(r.supplement.added,3);
-  assert.equal(f.downloads.length,20);assert(f.downloads.every(d=>d.size===C.MODES[mode].sampleBytes));
+  assert.equal(f.downloads.length,mode==='full'?80:20);assert(f.downloads.every(d=>d.size===2000000));
   assert.equal(r.bytes,40*C.MODES[mode].screenBytes+20*C.MODES[mode].sampleBytes);
   assert(r.premium.bytes>0);assert.equal(r.premium.verified,10);assert.equal(r.premium.refreshed,0);
   assert.equal(new Set(r.selected.map(e=>e.ip)).size,10);
@@ -128,7 +128,7 @@ test('reserve Premium failures cost no full downloads and failed full retests ca
 });
 test('reserve retesting stops at 24 extra candidates instead of consuming unbounded downloads',async()=>{
  const f=reserveFixture({limit:160,rejectReserveDownloads:true});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 合格 7\/10，补选复测达到上限/);
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/综合检查合格 7\/10，补选复测达到上限/);
  assert.equal(f.seen.length,48);assert.equal(f.downloads.length,38);
  const s=f.progress.at(-1).supplement;assert.equal(s.refined,24);assert.equal(s.added,0);assert(s.limited);
  assert.equal(f.progress.at(-1).refinement.reserveSkippedInvalidFirst,24);
@@ -169,7 +169,7 @@ test('unknown, Lite-only and changing Premium regions fail closed',async()=>{
    if(kind==='timeout')return {status:200,error:'timeout',data:premiumPage()};
    return {status:200,data:premiumPage({lite:kind==='lite',region:n===1?'US':'JP'})};
   };
-  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium (?:首检)?合格 0\/10/);
+  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/(?:Premium 首检合格|综合检查合格) 0\/10/);
   assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  }
 });
