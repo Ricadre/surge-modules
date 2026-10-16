@@ -1,0 +1,13 @@
+#!name=小宇宙开屏广告过滤（测试版）
+#!desc=仅处理 v1/flash-screen/list 开屏接口，返回空 JSON；不改写订阅、搜索和播放接口。需 Surge iOS 5.9.1+，开启重写与 MITM，并信任证书。缓存广告可能需后续启动才消失。
+#!version=0.1.0
+#!homepage=https://github.com/Ricadre/surge-modules
+
+# 独立模块，无外部脚本和整域名封锁。
+# 仅匹配完整开屏列表路径；不套用公开合集中的首页、搜索、AI 等净化规则。
+# 接口线索与验证状态见 docs/xiaoyuzhou-splash.txt。
+[Map Local]
+^https://api\.xiaoyuzhoufm\.com/v1/flash-screen/list/?(?:\?.*)?$ data-type=text data="{}" status-code=200 header="Content-Type:application/json"
+
+[MITM]
+hostname = %APPEND% api.xiaoyuzhoufm.com

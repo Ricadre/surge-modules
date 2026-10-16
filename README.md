@@ -9,6 +9,7 @@
 | Cloudflare 一键优选 | 0.1.11 · 1280 个轻量初筛 → 最多 160 个下载 → 前十，默认省流，预览版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank.sgmodule) |
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
+| 小宇宙开屏广告过滤 | 0.1.0 · 仅处理开屏接口，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
 
 ## Cloudflare 一键优选（预览版）
 
@@ -36,6 +37,12 @@
 
 详细范围、验证方法和恢复方法见[豆瓣模块说明](docs/douban-splash.txt)。远程地址保持稳定，后续可通过 Surge 更新。
 
+## 小宇宙开屏广告过滤（测试版）
+
+仅对 `api.xiaoyuzhoufm.com/v1/flash-screen/list` 返回空 JSON，不改写订阅、搜索、节目和音频播放接口。使用 Surge 原生 Map Local，无外部脚本，需 Surge iOS 5.9.1+、重写、MITM 和已信任的证书。安装后彻底退出并重开小宇宙，缓存广告可能需后续启动才消失。
+
+小宇宙模块依据公开接口线索实现，仅匹配指定开屏路径。缓存素材可能在重新启动 App 后更新；普通功能和不同 App 版本需分别验证。范围、来源和恢复步骤见[小宇宙模块说明](docs/xiaoyuzhou-splash.txt)。
+
 ## X 模块已删除
 
 X 模块及其专用实现已从当前分支移除，旧 Raw 地址不再提供模块。远端删除不会自动卸载本地副本，已有安装应在 Surge 中手动停用或删除。
@@ -56,6 +63,7 @@ docs/     模块说明
 python3 scripts/build_amap.py --check
 python3 tests/test_amap_ad_filter.py
 python3 tests/test_douban_splash.py
+python3 tests/test_xiaoyuzhou_splash.py
 ```
 
 广告模块构建只需 Python 3；规则测试还需 jq 1.7+。`build_amap.py` 生成高德测试版。测试检查 URL 范围、过滤逻辑、保留字段及未知结构兼容，不能替代手机验证。
