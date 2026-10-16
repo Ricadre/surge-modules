@@ -82,6 +82,8 @@ node --check scripts/CF-AutoRank.js
 
 新增模块使用独立文件和说明，保持远程路径稳定。未实机验证的模块需明确标为测试版，由用户主动选择安装，不自动加入主配置。不要将个人代理配置、Cookie、令牌、证书或私钥放入此公开仓库。
 
+提交身份、通用文档要求及历史同步方式见[维护与隐私](docs/maintenance.md)。
+
 ## 参考
 
 - [Surge 模块机制](https://manual.nssurge.com/profile/module.html)
