@@ -1,0 +1,24 @@
+#!name=航旅纵横 · 轻量去广告
+#!desc=0.1.0 测试版。拦截已知开屏接口和两个广告请求标识，不读取正文；自动下载脚本。需重写、脚本、MITM 和已信任证书。当前 App 兼容性待验证。
+#!version=0.1.0
+#!category=去广告
+#!homepage=https://github.com/nuvora-f44c84/surge-modules
+
+# SPDX-License-Identifier: GPL-3.0-only
+# Endpoint and identifier sources: fmz200/wool_scripts
+# https://github.com/fmz200/wool_scripts/blob/main/QuantumultX/rewrite/rewrite.snippet
+# https://github.com/fmz200/wool_scripts/blob/main/Scripts/umetrip/umetrip_ads.js
+# Modified for Surge: bounded URLs, request-header filtering, exact identifiers,
+# case-insensitive header names and passthrough on unknown input.
+# Do not enable another Umetrip cleanup module at the same time.
+# Scope, upstream attribution and license: docs/lite-adblocks.md
+
+[URL Rewrite]
+^https?://oss\.umetrip\.com/fs/advert/polite(?:[/?]|$) _ reject
+^https?://(?:discardrp|startup)\.umetrip\.com/gateway/api/umetrip/native(?:\?|$) _ reject
+
+[Script]
+umetrip-adblock-lite = type=http-request,pattern=^(?:https?://home\.umetrip\.com|http://114\.115\.217\.129)/gateway/api/umetrip/native(?:\?|$),script-path=https://gh-proxy.com/https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/scripts/Umetrip-AdBlock-Lite.js,requires-body=false,timeout=2,engine=jsc
+
+[MITM]
+hostname = %APPEND% home.umetrip.com, discardrp.umetrip.com, startup.umetrip.com, oss.umetrip.com

@@ -10,6 +10,8 @@
 | 高德地图推广过滤 | 0.2.0 · 个人主页推广过滤，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Amap-AdBlock.sgmodule) |
 | 豆瓣开屏广告过滤 | 0.1.0 · 仅处理开屏接口 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Douban-Splash-AdBlock.sgmodule) |
 | 小宇宙广告过滤 | 0.2.0 · 开屏及首页明确标记的推广横幅 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Xiaoyuzhou-Splash-AdBlock.sgmodule) |
+| 咪咕视频 · 广告域名补充 | 0.1.0 · 6 个精确域名，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/MiguVideo-AdBlock-Lite.sgmodule) |
+| 航旅纵横 · 轻量去广告 | 0.1.0 · 已知开屏接口及广告请求标识，测试版 | [模块 Raw 文件](https://raw.githubusercontent.com/nuvora-f44c84/surge-modules/main/modules/Umetrip-AdBlock-Lite.sgmodule) |
 
 ## Cloudflare 一键优选（预览版）
 
@@ -46,6 +48,14 @@
 过滤开屏，并在首页 `discovery-feed/list` 的横幅数组中仅移除 `presetPurpose=OPERATIONAL` 或 `showAdIndicator=true` 的条目。保留普通推荐、编辑精选、榜单、顶部功能入口、未标记横幅和分页数据；不改写订阅、搜索、节目和播放接口。使用 Surge 原生 Map Local 与 JQ，无外部脚本，需 Surge iOS 5.14+、重写、MITM 和已信任的证书。
 
 原开屏模块远程地址保持不变，更新到 **0.2.0** 后彻底退出并重开小宇宙。缓存素材可能需后续启动才消失，未带明确标记的推广保留；普通功能和不同 App 版本需分别验证。范围、来源和恢复步骤见[小宇宙模块说明](docs/xiaoyuzhou-splash.txt)。
+
+## 咪咕视频与航旅纵横（测试版）
+
+咪咕模块精确拦截 6 个域名，无需 MITM 或脚本；其中 `ggx05.miguvideo.com` 为实验候选，不保证移除所有广告或品牌倒计时。
+
+航旅模块拦截已知开屏接口，并用请求头中的两个精确广告标识过滤请求，不读取正文。需要重写、脚本、MITM 和已信任证书；JS 由模块通过镜像自动下载，无需另放本地文件。当前 App 的完整兼容性待实机验证。
+
+两个模块均提供固定远程地址。迁移时停用同名本地模块，再启用远程版本；不要同时启用两份。安装链接（含镜像）、影响范围、上游来源和回退方法见[轻量去广告说明](docs/lite-adblocks.md)。
 
 ## X 模块已删除
 

@@ -1,0 +1,21 @@
+#!name=咪咕视频 · 广告域名补充
+#!desc=0.1.0 测试版。精确拦截 6 个域名；无需 MITM 或脚本。不保证移除品牌画面、倒计时及所有广告，异常时停用。
+#!version=0.1.0
+#!category=去广告
+#!homepage=https://github.com/nuvora-f44c84/surge-modules
+
+# SPDX-License-Identifier: GPL-3.0-only
+# Rules adapted from fmz200/wool_scripts (Migu Video section):
+# https://github.com/fmz200/wool_scripts/blob/main/QuantumultX/rewrite/rewrite.snippet
+# Modified for Surge: exact-host rules only; includes the experimental ggx05 host.
+# Scope, upstream attribution and license: docs/lite-adblocks.md
+
+[Rule]
+DOMAIN,ggc.cmvideo.cn,REJECT
+DOMAIN,ggv.cmvideo.cn,REJECT
+DOMAIN,ggic03.miguvideo.com,REJECT
+DOMAIN,ggmk.miguvideo.com,REJECT
+DOMAIN,ggadoffline.miguvideo.com,REJECT
+
+# Experimental: the upstream ggx family rule is path-based, not whole-host blocking.
+DOMAIN,ggx05.miguvideo.com,REJECT
