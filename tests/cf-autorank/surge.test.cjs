@@ -1,3 +1,4 @@
+const convertedName=require('./subconverter-fixture.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const root=path.join(__dirname,'../../src/cf-autorank');
 const source=fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
@@ -18,7 +19,7 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
    else if(url.pathname==='/sub'){
     const entries=list.split('\n').map(x=>{const [key,name]=x.split('#');return {key,name};});
     if(url.searchParams.has('b64'))data=Buffer.from(entries.map(({key,name})=>`trojan://${uuid}@${key}?security=tls&type=ws&host=${host}&sni=${host}&path=%2F#${encodeURIComponent(name)}`).join('\n')).toString('base64');
-    else data='[Proxy]\n'+entries.map(({key,name})=>{const [ip,port]=key.split(':');return `${name} = trojan, ${ip}, ${port}, password=${uuid}, sni=${host}, ws=true, ws-path=/, ws-headers=Host:"${host}", skip-cert-verify=false`;}).join('\n');
+    else data='[Proxy]\n'+entries.map(({key,name})=>{const [ip,port]=key.split(':');return `${convertedName(name)} = trojan, ${ip}, ${port}, password=${uuid}, sni=${host}, ws=true, ws-path=/, ws-headers=Host:"${host}", skip-cert-verify=false`;}).join('\n');
    } else throw new Error('unexpected control path');
   } else {
    assert.match(options['policy-descriptor'],/^CF-Probe-.* = trojan,/);assert.equal(options.policy,undefined);assert.equal(options['auto-cookie'],false);
@@ -50,6 +51,8 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  assert.match(r.output.content,/上次更新 .*10 节点/);assert.equal(r.output.content.split('\n').length,2);
  assert(!/\d+\.\d+\.\d+\.\d+/.test(r.output.content));assert(r.logs.some(line=>line.includes('Mbps')));
  const verified=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(verified.result.verified,true);
+ assert(verified.result.selected.every(e=>e.name.startsWith('【🇺🇸】 CF')));
+ assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
 });
 test('local active run lock prevents a second run',async()=>{
  const active=JSON.stringify({running:true,stage:'下载初筛',done:8,total:40,bytes:1000000,updatedAt:Date.now()});
@@ -105,7 +108,7 @@ test('rename uses explicit CF exit probes and direct backend while preserving sp
  const probes=r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?'));assert.equal(probes.length,20);assert(probes.every(x=>x.descriptor&&!x.policy));
  const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.running,false);assert.equal(state.stage,'名称已核对');
  assert.deepEqual(state.lastSuccess,lastSuccess);assert.equal(state.nameResult.verified,true);
- assert.match(r.writes[0],/^8\.35\.211\.1:2053#🇺🇸 CF1-8\.35\.211\.1\n/);
+ assert.match(r.writes[0],/^8\.35\.211\.1:2053#【🇺🇸】 CF1-8\.35\.211\.1\n/);
 });
 test('automatic refresh never renames the backend',async()=>{
  const r=await run('rename|example.net|lite|40|local-secret','auto-interval');
@@ -115,7 +118,7 @@ test('adapter supports online country lookup when the native GeoIP database is e
  const r=await run('rename|example.net|lite|40|local-secret','editor',{}, {noGeoIP:true});
  const lookups=r.requests.filter(x=>x.url.startsWith('https://ipwho.is/'));
  assert.equal(lookups.length,1);assert(lookups[0].descriptor&&!lookups[0].policy);
- assert.equal(r.writes.length,1);assert.match(r.writes[0],/#🇯🇵 CF1-/);
+ assert.equal(r.writes.length,1);assert.match(r.writes[0],/#【🇯🇵】 CF1-/);
  const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.nameResult.verified,true);
 });
 test('published module has static fallback panels and resolves every action to its versioned bundle',()=>{

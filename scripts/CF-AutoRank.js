@@ -1,4 +1,4 @@
-// CF AutoRank v0.1.7. Credentials are entered by the user; never bundle secrets.
+// CF AutoRank v0.1.8. Credentials are entered by the user; never bundle secrets.
 (function (root) {
 'use strict';
 const MODES = {
@@ -86,7 +86,8 @@ function countryFlag(country) {
   return /^[A-Z]{2}$/.test(country||'')&&!['XX','ZZ','AA'].includes(country)
     ? Array.from(country).map(c=>String.fromCodePoint(127397+c.charCodeAt(0))).join('') : '🌐';
 }
-function namedEntries(entries) { return entries.map((e,i)=>({...e,name:countryFlag(e.egress&&e.egress.country)+' CF'+(i+1)+'-'+e.ip})); }
+// Brackets preserve the observed flag when subconverter removes leading emoji.
+function namedEntries(entries) { return entries.map((e,i)=>({...e,name:'【'+countryFlag(e.egress&&e.egress.country)+'】 CF'+(i+1)+'-'+e.ip})); }
 function publicIPv4(ip) {
   const n=ipNumber(ip);if(n===null)return false;
   const [a,b,c]=ip.split('.').map(Number);
@@ -373,7 +374,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round(last.bytes/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.7 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.8 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const traffic=Math.round((s.bytes||0)/1000000)+' MB';
   if(s.running) {
     const age=Math.max(0,now-(s.updatedAt||s.startedAt||now));
@@ -410,7 +411,7 @@ let opts, stateKey, finished=false, ownsRun=false, ownerId;
 const started=Date.now();
 const localNetwork=typeof $network==='object'?$network:{};
 const network=ui.networkInfo(localNetwork),networkLabel=ui.networkText(network);
-const UA='CF-Edge-AutoRank/0.1.7';
+const UA='CF-Edge-AutoRank/0.1.8';
 console.log(UA+' · '+(typeof $trigger==='string'?$trigger:'manual'));
 function read(){try{return JSON.parse($persistentStore.read(stateKey)||'{}');}catch(_){return {};}}
 function write(value){if(!$persistentStore.write(JSON.stringify(value),stateKey))throw new Error('本机状态存储失败，已停止');}

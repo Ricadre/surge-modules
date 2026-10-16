@@ -1,8 +1,9 @@
+const convertedName=require('./subconverter-fixture.cjs');
 const test=require('node:test');const assert=require('node:assert/strict');const C=require('../../src/cf-autorank/core.js');const pools=require('../../src/cf-autorank/pools.json');
 const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
 function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
 function fixture(options={}) {
- let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`🇺🇸 CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
+ let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`【🇺🇸】 CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
  const original=list,posts=[],calls=[],progress=[],geoCalls=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
  const cfg=config();
  const env={
@@ -20,7 +21,7 @@ function fixture(options={}) {
    if(path==='/admin/ADD.txt')return list;
    const entries=C.parseList(list,pools);
    if(path.endsWith('&b64'))return Buffer.from(entries.map(e=>`trojan://${PASS}@${e.key}?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${encodeURIComponent(options.rawNameFail&&posts.length===1?'Old name':e.name)}`).join('\n')).toString('base64');
-   if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`${options.surgeNameFail&&posts.length===1?'Old name':e.name} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
+   if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`${options.surgeNameFail&&posts.length===1?'Old name':convertedName(e.name)} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
    throw new Error('Unknown path');
   },
   probe:async spec=>{
@@ -69,6 +70,23 @@ test('successful end-to-end mock publishes only ADD.txt and verifies both subscr
  assert.equal(r.candidateCount,40);assert(f.calls.some(x=>x[1].endsWith('&surge')));
  assert(r.selected.every(x=>x.samples.length===2));
 });
+test('converter strips legacy flag prefixes but preserves bracketed countries and unknown marker',()=>{
+ for(const flag of ['🇺🇸','🇯🇵','🌐']) {
+  assert.equal(convertedName(flag+' CF1-8.35.211.1'),'CF1-8.35.211.1');
+  assert.equal(convertedName('【'+flag+'】 CF1-8.35.211.1'),'【'+flag+'】 CF1-8.35.211.1');
+ }
+});
+test('full ranking and rename survive leading-emoji removal with exact names in both subscriptions',async()=>{
+ for(const action of [C.execute,C.renameOnly])for(const unknown of [false,true]) {
+  const f=fixture({geoipUnknown:unknown}),r=await action(f.env,f.opts,pools);
+  assert(r.changed&&r.verified);assert.equal(f.posts.length,1);
+  assert(r.selected.every(e=>e.name.startsWith(unknown?'【🌐】 CF':'【🇺🇸】 CF')));
+  const cfg=C.configGuard(config(),HOST);
+  const raw=C.parseRaw(await f.env.control('GET','/sub?mock&b64'),cfg,pools);
+  const surge=C.parseSurge(await f.env.control('GET','/sub?mock&surge'),cfg,pools);
+  assert(C.sameNamedEntries(r.selected,raw));assert(C.sameNamedEntries(r.selected,surge));
+ }
+});
 for(const [name,options,pattern] of [
  ['wrong mode',{wrongMode:true},/自定义模式/],['login failure',{loginFail:true},/登录失败/],
  ['no candidates',{allFail:true},/不足 10/],['cancel',{cancel:true},/取消/],
@@ -87,7 +105,7 @@ test('rename preserves every endpoint and order with only small exit-IP probes',
  const before=C.parseList(f.original,pools);const r=await C.renameOnly(f.env,f.opts,pools);
  assert(r.changed&&r.verified);assert.equal(f.posts.length,1);
  const after=C.parseList(f.getList(),pools);assert(C.sameEntries(before,after));
- assert.deepEqual(after.map(e=>e.name),Array.from({length:10},(_,i)=>`🇺🇸 CF${i+1}-8.35.211.${i+1}`));
+ assert.deepEqual(after.map(e=>e.name),Array.from({length:10},(_,i)=>`【🇺🇸】 CF${i+1}-8.35.211.${i+1}`));
  assert.equal(f.geoCalls.length,20);assert(f.geoCalls.every(ip=>ip==='8.8.4.4'));
 });
 test('rename is idempotent and checks both subscription formats',async()=>{
@@ -112,14 +130,14 @@ test('exit country comes from two observed public IPs, not the entrance or exist
  const lookedUp=[];f.env.geoip=ip=>{lookedUp.push(ip);return 'JP';};
  const result=await C.exitCountry(f.env,e,cfg,async()=>{});
  assert.equal(result.country,'JP');assert.deepEqual(lookedUp,['8.8.4.4','1.1.1.1']);
- assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'🇯🇵 CF1-8.35.211.1');
+ assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'【🇯🇵】 CF1-8.35.211.1');
 });
 test('different exit countries are explicitly unknown, never averaged or inherited',async()=>{
  const f=fixture(),e=C.parseList(f.original,pools)[0];let n=0;
  f.env.geoip=()=>++n===1?'JP':'US';
  const result=await C.exitCountry(f.env,e,C.configGuard(config(),HOST),async()=>{});
  assert.equal(result.status,'inconsistent');assert.equal(result.country,null);
- assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'🌐 CF1-8.35.211.1');
+ assert.equal(C.namedEntries([{...e,egress:result}])[0].name,'【🌐】 CF1-8.35.211.1');
 });
 test('private, malformed, timed out, redirected and oversized IP replies cannot get a country flag',async()=>{
  for(const response of [
@@ -135,7 +153,7 @@ test('private, malformed, timed out, redirected and oversized IP replies cannot 
 test('unknown detection replaces an old flag and still preserves every endpoint',async()=>{
  const f=fixture({alreadyNamed:true,geoipUnknown:true});const r=await C.renameOnly(f.env,f.opts,pools);
  assert(r.verified);assert(C.sameEntries(C.parseList(f.original,pools),r.selected));
- assert(r.selected.every(e=>e.name.startsWith('🌐 CF')&&e.egress.country===null));
+ assert(r.selected.every(e=>e.name.startsWith('【🌐】 CF')&&e.egress.country===null));
 });
 test('missing local GeoIP falls back through the same CF node and caches only within the run',async()=>{
  const f=fixture({geoipUnknown:true}),probe=f.env.probe;let lookups=0,observations=0;
@@ -147,7 +165,7 @@ test('missing local GeoIP falls back through the same CF node and caches only wi
  };
  const first=await C.renameOnly(f.env,f.opts,pools);
  assert(first.verified);assert.equal(observations,20);assert.equal(lookups,1);
- assert(first.selected.every(e=>e.name.startsWith('🇯🇵 CF')&&e.egress.samples.every(s=>s.countrySource==='IPWhois')));
+ assert(first.selected.every(e=>e.name.startsWith('【🇯🇵】 CF')&&e.egress.samples.every(s=>s.countrySource==='IPWhois')));
  f.env.backup=async b=>assert.equal(b.list,f.getList());
  const second=await C.renameOnly(f.env,f.opts,pools);
  assert(second.verified&&!second.changed);assert.equal(observations,40);assert.equal(lookups,2);
@@ -189,8 +207,8 @@ test('network change or cancellation during exit detection prevents any rename',
  }
 });
 test('literal UTF-8 flags and percent-encoded flags both survive raw subscription parsing',()=>{
- const cfg=C.configGuard(config(),HOST),name='🇯🇵 CF1-8.35.211.1';
- for(const fragment of [name,encodeURIComponent(name)]) {
+ const cfg=C.configGuard(config(),HOST);
+ for(const name of ['🇯🇵 CF1-8.35.211.1','【🇯🇵】 CF1-8.35.211.1','【🌐】 CF1-8.35.211.1'])for(const fragment of [name,encodeURIComponent(name)]) {
   const raw=`trojan://${PASS}@8.35.211.1:2053?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${fragment}`;
   assert.equal(C.parseRaw(Buffer.from(raw).toString('base64'),cfg,pools)[0].name,name);
  }

@@ -85,7 +85,8 @@ function countryFlag(country) {
   return /^[A-Z]{2}$/.test(country||'')&&!['XX','ZZ','AA'].includes(country)
     ? Array.from(country).map(c=>String.fromCodePoint(127397+c.charCodeAt(0))).join('') : '🌐';
 }
-function namedEntries(entries) { return entries.map((e,i)=>({...e,name:countryFlag(e.egress&&e.egress.country)+' CF'+(i+1)+'-'+e.ip})); }
+// Brackets preserve the observed flag when subconverter removes leading emoji.
+function namedEntries(entries) { return entries.map((e,i)=>({...e,name:'【'+countryFlag(e.egress&&e.egress.country)+'】 CF'+(i+1)+'-'+e.ip})); }
 function publicIPv4(ip) {
   const n=ipNumber(ip);if(n===null)return false;
   const [a,b,c]=ip.split('.').map(Number);
