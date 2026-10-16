@@ -31,3 +31,9 @@ test('stale state is uncertain rather than falsely running or complete',()=>{
 test('unchanged successful list is labelled checked rather than newly published',()=>{
   assert.match(U.view('main',{lastSuccess:{...history,changed:false}},now).content,/上次核对/);
 });
+test('existing progress card identifies fallback pools while staying at two lines',()=>{
+ for(const [source,note] of [['cache','缓存池'],['bundled','内置池']])for(const running of [true,false]) {
+  const state={running,stage:running?'下载初筛':'完成',done:40,total:320,startedAt:now-10000,updatedAt:now,poolInfo:{source}};
+  const card=U.view('status',state,now,'lite');assert(card.content.includes(note));assert.equal(card.content.split('\n').length,2);
+ }
+});

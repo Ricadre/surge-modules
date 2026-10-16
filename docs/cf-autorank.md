@@ -1,4 +1,4 @@
-# Cloudflare 一键优选 · 0.1.8 预览版
+# Cloudflare 一键优选 · 0.1.9 预览版
 
 在 iPhone 或 Mac 的当前网络里测试候选 CF 入口，复测后选出 10 个不同 IP，自动保存到已有 edgetunnel 后台的自定义列表。成功提示之后，手动刷新原有 Surge 订阅即可。
 
@@ -9,12 +9,12 @@
 在 Surge 的模块页面选择通过 URL 安装，粘贴：
 
 ```text
-https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.8.sgmodule
+https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank-0.1.9.sgmodule
 ```
 
-[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.8.sgmodule)
+[用 Surge 打开安装](surge:///install-module?url=https%3A%2F%2Fraw.githubusercontent.com%2FRicadre%2Fsurge-modules%2Fmain%2Fmodules%2FCF-AutoRank-0.1.9.sgmodule)
 
-模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.8.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
+模块自动从同一公开仓库下载 `scripts/CF-AutoRank-0.1.9.js`，无需放置本地文件、GitHub 登录或访问令牌。地址里不要追加密码。请使用支持模块参数和 WebView 脚本的新版 Surge。若以前手动安装了本工具的本地模块，先停用旧模块，避免同名脚本和面板重复。
 
 安装时填写参数：
 
@@ -27,13 +27,29 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 参数由 Surge 保存，不会提交到本仓库。密码参数不等同于系统钥匙串；请勿分享参数截图、填好密码的模块或完整日志。密码包含双引号、反斜杠、换行，或原密码以 `b64:` 开头时，请填 `b64:` 加原密码的 UTF-8 Base64。Base64 仅解决参数转义，不是加密；不要使用在线网站编码密码。
 
-## 0.1.8 自动国旗与订阅转换兼容
+## 0.1.9 每轮更新候选范围
+
+每次手动运行完整优选时，先通过 `DIRECT` 获取 [Cloudflare 官方 IPv4 列表](https://www.cloudflare.com/ips-v4)。响应失败、重定向、超时或格式无效时，改用 [Cloudflare 官方 IP 接口](https://api.cloudflare.com/client/v4/ips)。两者都失败时，使用本机最近 7 天成功缓存；缓存缺失、过期或校验失败，则使用模块内置的官方备份。缓存不会阻止下一轮再次尝试在线更新。
+
+模块内置的官方备份为 15 个网段，共 1,524,736 个 IPv4 地址。获取最新列表不意味着官方每天改变网段，也不代表其中每个地址都能用于当前部署；仍需连通与下载实测。
+
+默认总数仍为 320：保留后台当前 10 个入口重新比较，另抽 233 个官方范围入口和 77 个原候选范围入口。新增名额按约 3:1 分配给官方范围与原有 25 个兼容网段，打乱网段顺序后轮流抽样 IP，并分配 443、2053 或 8443。新入口按 IP 去重，避免用同一 IP 的不同端口重复占名额；原有入口保持原 IP 和端口参加比较。候选不是穷举，也不保证比上一轮更快。
+
+官方网段会随每轮获取更新；原有兼容网段随模块版本维护。已存在后台的公网 IPv4:TLS 入口即使不在最新范围中，仍以原地址参加测试，不据此扩大随机抽样范围。原始与 Surge 订阅核对、国旗命名、失败恢复均支持新增范围。
+
+更新只获取少量网段文本，不把 152 万地址全部测速。默认 `lite` 的 128 KiB 初筛、两次各最多 2 MB/8 秒复测、前 24 个不同 IP 复测及前十发布流程保持不变。`full` 仍可手动选择。省流约 100–200 MB 是估算，实际网络开销不构成硬上限。
+
+原有进度面板会短暂显示「更新候选池」。发生回退时，本轮运行及完成状态会标注「缓存池」或「内置池」，完整来源、数量与获取时间保存在本机记录/日志；不增加面板。网段请求不携带后台密码、节点凭据或 Cookie，不跟随重定向；只有主面板手动启动完整优选才会刷新池，自动刷新和只读进度不会触发下载测试。
+
+官方网段输入会验证 HTTP 状态、IPv4 CIDR 格式、对齐、数量、规模、重叠及保留地址；异常数据不会覆盖有效缓存。更新期间切网或取消会停止本轮，不登录或写后台。来源接口说明见 [Cloudflare 官方文档](https://developers.cloudflare.com/api/resources/ips/methods/list/)。
+
+## 0.1.8 自动国旗与订阅转换兼容（历史修复）
 
 每次手动点击「Cloudflare 一键优选」完成整轮后，脚本会检测本轮前十的出口国家，自动以 `【国旗】 CF编号-IP` 写入后台；收到成功提示后，刷新原 CF 订阅即可。无需另找改名脚本，不增加面板。
 
 0.1.7 把国旗直接放在名称最前面。当前已验证的转换器会删除前置 emoji，造成原始订阅与 Surge 转换订阅名称不一致，模块随后尝试恢复备份。0.1.8 在国旗外加 `【】`，用于在原始与 Surge 转换订阅中保留国旗。检测无法确认国家时使用 `【🌐】`，不猜测、不沿用旧国旗。转换设置不需要调整。
 
-本版保留原先的两次出口观察、保存前并发检查、保存后两种订阅精确名称核对及失败恢复保护。模块升级本身不改后台；固定版本的 0.1.7 链接也不会自行升级，需导入上方的 0.1.8 链接，只启用一份 CF 模块。
+本版保留原先的两次出口观察、保存前并发检查、保存后两种订阅精确名称核对及失败恢复保护。模块升级本身不改后台；固定版本的 0.1.7 链接也不会自行升级，需导入上方的当前版本链接，只启用一份 CF 模块。
 
 参考：[subconverter 名称处理](https://github.com/tindy2013/subconverter/blob/master/src/generator/config/nodemanip.cpp)、[旧式 emoji 参数处理](https://github.com/tindy2013/subconverter/blob/master/src/handler/interfaces.cpp)。
 
@@ -61,7 +77,7 @@ https://raw.githubusercontent.com/Ricadre/surge-modules/main/modules/CF-AutoRank
 
 ## 使用与进度
 
-先等当前测速结束，再停用旧 CF 模块并导入 0.1.8，填写原后台参数，只启用一份。无需编辑原主配置、策略组或代理模式。
+先等当前测速结束，再停用旧 CF 模块并导入 0.1.9，填写原后台参数，只启用一份。无需编辑原主配置、策略组或代理模式。
 
 **Cloudflare 一键优选**：橙色云朵 `cloud.fill`，点击一次完成测速、前十筛选、出口国家检测、带旗名称保存和两种订阅核对。它显示上次成功的记录，示例如下（示例数据）：
 
@@ -91,7 +107,7 @@ Surge 原生面板支持 SF Symbols 和颜色，不支持把品牌图片直接�
 
 ## 测试范围与流量
 
-- 每轮生成指定数量的候选入口，覆盖允许网段及 443、2053、8443 端口，包括当前发布节点；并非穷举所有 Cloudflare IP。
+- 每轮更新官方范围并生成指定数量的候选入口，覆盖 443、2053、8443 端口，包括当前发布节点；分配和回退方式见上方 0.1.9 说明。
 - 全部候选先检查连接，可连接入口进行实际下载初筛；前 24 个不同 IP 进行两次下载复测和多次 YouTube 连通性检查，按两次下载的较低速度取前 10。
 - 默认 320 个候选：省流档通常约 100–200 MB，完整档约 300–600 MB，实际消耗取决于成功请求数、候选数量和协议开销；这些不是运营商流量硬上限。
 - 下载采用随机查询参数和随机 Range，校验 HTTP 206、Content-Range 和字节数。超时但收到有效数据时标记为限时样本，不称作完整下载。

@@ -1,7 +1,7 @@
 const convertedName=require('./subconverter-fixture.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const root=path.join(__dirname,'../../src/cf-autorank');
-const source=fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
+const source=fs.readFileSync(path.join(root,'core.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'pool-source.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'panel.js'),'utf8')+'\nconst CF_RANK_POOLS='+fs.readFileSync(path.join(root,'pools.json'),'utf8')+';\nconst CF_RANK_OFFICIAL='+fs.readFileSync(path.join(root,'official-pools.json'),'utf8')+';\n'+fs.readFileSync(path.join(root,'surge.js'),'utf8');
 async function run(argument,trigger='button',seedStore={},harness={}) {
  const store=harness.sharedStore||{...seedStore},logs=[],requests=[],writes=[],states=[];let output,doneCount=0;
  const host='example.net',uuid='11111111-1111-4111-8111-111111111111';
@@ -21,6 +21,11 @@ async function run(argument,trigger='button',seedStore={},harness={}) {
     if(url.searchParams.has('b64'))data=Buffer.from(entries.map(({key,name})=>`trojan://${uuid}@${key}?security=tls&type=ws&host=${host}&sni=${host}&path=%2F#${encodeURIComponent(name)}`).join('\n')).toString('base64');
     else data='[Proxy]\n'+entries.map(({key,name})=>{const [ip,port]=key.split(':');return `${convertedName(name)} = trojan, ${ip}, ${port}, password=${uuid}, sni=${host}, ws=true, ws-path=/, ws-headers=Host:"${host}", skip-cert-verify=false`;}).join('\n');
    } else throw new Error('unexpected control path');
+  } else if(options.url==='https://www.cloudflare.com/ips-v4'||options.url==='https://api.cloudflare.com/client/v4/ips') {
+   assert.equal(options.policy,'DIRECT');assert.equal(options['policy-descriptor'],undefined);assert.equal(options['auto-cookie'],false);assert.equal(options['auto-redirect'],false);assert.equal(options.body,undefined);
+   const official=JSON.parse(fs.readFileSync(path.join(root,'official-pools.json'),'utf8'));
+   const failed=harness.poolFail||(harness.primaryPoolFail&&options.url.includes('www.cloudflare.com'));
+   status=failed?403:200;data=failed?'blocked':options.url.includes('api.cloudflare.com')?JSON.stringify({success:true,result:{ipv4_cidrs:official}}):official.join('\n');
   } else {
    assert.match(options['policy-descriptor'],/^CF-Probe-.* = trojan,/);assert.equal(options.policy,undefined);assert.equal(options['auto-cookie'],false);
    if(options.headers.Range){const m=/bytes=(\d+)-(\d+)/.exec(options.headers.Range);status=206;data={byteLength:Number(m[2])-Number(m[1])+1};headers={'Content-Range':`bytes ${m[1]}-${m[2]}/200000000`};}
@@ -53,6 +58,44 @@ test('adapter full mock uses only direct backend and explicit temporary CF polic
  const verified=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(verified.result.verified,true);
  assert(verified.result.selected.every(e=>e.name.startsWith('【🇺🇸】 CF')));
  assert.equal(r.requests.filter(x=>x.url.startsWith('https://api.ipify.org?')).length,20);
+ assert.equal(verified.poolInfo.source,'live-text');
+ assert.equal(verified.result.candidateSources.current,10);
+ assert.equal(verified.result.candidateSources.official,23);
+ assert.equal(verified.result.candidateSources.legacy,7);
+});
+test('adapter refreshes official data each run even when a valid cache already exists',async()=>{
+ const sharedStore={};
+ for(let i=0;i<2;i++) {
+  const r=await run('start|example.net|lite|40|local-secret','button',{}, {sharedStore});
+  assert.equal(r.requests.filter(x=>x.url==='https://www.cloudflare.com/ips-v4').length,1);
+  assert.equal(JSON.parse(sharedStore['CFEdgeRank_example.net']).result.verified,true);
+ }
+ const cache=JSON.parse(sharedStore['CFEdgeRank_example.net_poolcache']);assert.equal(cache.ranges.length,15);
+ assert(!JSON.stringify(cache).includes('local-secret'));
+});
+test('adapter uses official fallback, recent cache or built-in ranges without extra panels',async()=>{
+ const key='CFEdgeRank_example.net_poolcache',ranges=JSON.parse(fs.readFileSync(path.join(root,'official-pools.json'),'utf8'));
+ for(const [harness,seed,expected] of [
+  [{primaryPoolFail:true},{},'live-api'],
+  [{poolFail:true},{[key]:JSON.stringify({version:1,url:'https://www.cloudflare.com/ips-v4',fetchedAt:Date.now(),ranges})},'cache'],
+  [{poolFail:true},{},'bundled']
+ ]) {
+  const r=await run('start|example.net|lite|40|local-secret','button',seed,harness);
+  const state=JSON.parse(r.store['CFEdgeRank_example.net']);assert.equal(state.poolInfo.source,expected);
+  assert.equal(state.result.verified,true);assert.equal(r.writes.length,1);assert.equal(r.output.content.split('\n').length,2);
+ }
+});
+test('cancel or change network while refreshing pool prevents login, probes and publication',async()=>{
+ for(const kind of ['cancel','network']) {
+  const network={wifi:{ssid:'First'}};
+  const r=await run('start|example.net|lite|40|local-secret','button',{}, {network,onRequest:({options,store})=>{
+   if(options.url!=='https://www.cloudflare.com/ips-v4')return;
+   if(kind==='network')network.wifi.ssid='Second';
+   else {const key='CFEdgeRank_example.net';store[key]=JSON.stringify({...JSON.parse(store[key]),cancelRequested:true});}
+  }});
+  assert.equal(r.requests.length,1);assert.equal(r.writes.length,0);assert.equal(r.store['CFEdgeRank_example.net_poolcache'],undefined);
+  assert.match(r.output.content,/取消|网络变化/);
+ }
 });
 test('local active run lock prevents a second run',async()=>{
  const active=JSON.stringify({running:true,stage:'下载初筛',done:8,total:40,bytes:1000000,updatedAt:Date.now()});

@@ -27,6 +27,18 @@ function parseList(text, pools) {
     return {...endpoint(m[1],Number(m[2]),pools),name:(m[3]||'').trim()};
   });
 }
+function includeCurrent(text,pools) {
+  const lines=String(text).split(/\r?\n/).filter(x=>x.trim()&&!x.trim().startsWith('#'));
+  assert(lines.length>0&&lines.length<=1024,'当前节点列表数量异常');
+  const exact=lines.map(line=>{
+    const m=/^\s*(\d+\.\d+\.\d+\.\d+):(\d+)(?:#.*)?\s*$/.exec(line);
+    assert(m&&publicIPv4(m[1])&&TLS_PORTS.includes(Number(m[2])),'当前节点含有非公网 IPv4 或未知 TLS 端口');
+    return m[1]+'/32';
+  });
+  // Existing backend entries remain eligible even if an official range disappears.
+  // These exact IPs authorize verification only; they never expand random sampling.
+  return Array.from(new Set(pools.concat(exact)));
+}
 function base64Decode(s) {
   const abc='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'; let bits=0, value=0, out='';
   s=String(s).replace(/\s/g,''); assert(/^[A-Za-z0-9+/]*={0,2}$/.test(s),'订阅编码无效');
@@ -138,19 +150,22 @@ async function exitNames(env,entries,cfg,guard,update) {
   for(const e of entries) {observed.push({...e,egress:await exitCountry(env,e,cfg,guard,geoCache)});await update('检测出口国家',observed.length,entries.length);}
   return namedEntries(observed);
 }
-function candidates(current,pools,limit,rng=Math.random) {
-  const out=[], seen=new Set();
-  const add=e=>{if(!seen.has(e.key)){seen.add(e.key);out.push(e);}};
-  current.forEach(add);
+function candidates(current,pools,limit,rng=Math.random,official=[]) {
+  const out=[],seen=new Set(),ips=new Set(),allowed=pools.concat(official);
+  const add=e=>{if(!seen.has(e.key)){seen.add(e.key);ips.add(e.ip);out.push(e);}};
+  current.forEach(e=>add({...e,candidateSource:'current'}));
+  const initial=out.length;
+  function shuffled(rows){const a=rows.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+  const wide=shuffled(official),legacy=shuffled(pools);let wi=0,li=0;
   let attempts=0;
   while(out.length<limit && attempts<limit*100) {
-    const i=attempts++;
-    const partner=i%2===0;
-    const cidr=partner ? (i%4===0?'8.35.211.0/24':'8.39.125.0/24') : pools[Math.floor(i/2)%pools.length];
+    attempts++;
+    const useOfficial=wide.length>0&&(out.length-initial)%4!==3;
+    const cidr=useOfficial?wide[wi++%wide.length]:legacy[li++%legacy.length];
     const [base,bits]=cidr.split('/'); const size=Math.pow(2,32-Number(bits));
     const n=ipNumber(base)+1+Math.floor(rng()*(size-2));
-    const port=partner ? (Math.floor(i/4)%3===0?8443:2053) : 443;
-    add(endpoint(numberIP(n),port,pools));
+    const ip=numberIP(n),port=[443,2053,8443][Math.floor(rng()*3)];
+    if(!ips.has(ip))add({...endpoint(ip,port,allowed),candidateSource:useOfficial?'official':'legacy'});
   }
   assert(out.length>=limit,'候选池生成失败');
   return out;
@@ -174,7 +189,9 @@ function downloadValid(result,start,size) {
 async function pool(items,n,fn) { let i=0; await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{while(i<items.length){const index=i++;await fn(items[index],index);}})); }
 function median(list){const s=list.slice().sort((a,b)=>a-b);if(!s.length)return null;const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 function topDistinct(rows,count) { const sorted=rows.filter(x=>x.valid).slice().sort((a,b)=>b.score-a.score||(a.latency||0)-(b.latency||0)); const seen=new Set();return sorted.filter(x=>{if(seen.has(x.ip))return false;seen.add(x.ip);return true;}).slice(0,count); }
-async function execute(env,opts,pools) {
+async function execute(env,opts,pools,poolInfo=null) {
+  const samplingPools=pools,official=poolInfo?poolInfo.official:[];
+  pools=pools.concat(official);
   const mode=MODES[opts.mode]; const runId=env.id(); const start=env.now(); let publishing=false;
   const progress={version:1,runId,host:opts.host,mode:opts.mode,startedAt:start,updatedAt:start,stage:'准备',done:0,total:0,bytes:0};
   const initialNetwork=env.networkKey();
@@ -186,13 +203,13 @@ async function execute(env,opts,pools) {
     assert(!initialNetwork||!currentNetwork||initialNetwork===currentNetwork,'检测到网络变化，本轮结果已丢弃');
   }
   const req=(method,path,body)=>env.control(method,path,body);
-  async function snapshot() { const config=await req('GET','/admin/config.json');const cfg=configGuard(config,opts.host);const list=await req('GET','/admin/ADD.txt');const entries=parseList(list,pools);assert(entries.length>0,'原列表为空，不自动初始化');return {cfg,list,entries}; }
+  async function snapshot(first=false) { const config=await req('GET','/admin/config.json');const cfg=configGuard(config,opts.host);const list=await req('GET','/admin/ADD.txt');if(first)pools=includeCurrent(list,pools);const entries=parseList(list,pools);assert(entries.length>0,'原列表为空，不自动初始化');return {cfg,list,entries}; }
   async function raw(cfg){return parseRaw(await req('GET','/sub?token='+cfg.token+'&b64'),cfg,pools);}
   await env.login(opts.host,opts.password);
-  const baseline=await snapshot();
+  const baseline=await snapshot(true);
   assert(sameEntries(await raw(baseline.cfg),baseline.entries),'实际订阅与后台列表尚未一致，请稍后再试');
   await env.backup({host:opts.host,list:baseline.list,entries:baseline.entries,createdAt:start});
-  const entries=candidates(baseline.entries,pools,Math.max(opts.limit,baseline.entries.length),env.random);
+  const entries=candidates(baseline.entries,samplingPools,Math.max(opts.limit,baseline.entries.length),env.random,official);
   await update('连通性初筛',0,entries.length);
   const reachable=[];let done=0;
   async function connect(e,target) {
@@ -236,6 +253,8 @@ async function execute(env,opts,pools) {
   assert(sameEntries(await raw(fresh.cfg),baseline.entries),'测速期间实际订阅已改变，跳过发布');
   await guard();
   const outcome={runId,startedAt:start,finishedAt:env.now(),host:opts.host,mode:opts.mode,candidateCount:entries.length,reachable:reachable.length,screened:screened.length,finalists:finalists.length,bytes:progress.bytes,selected:expectedNames.map(({ip,port,key,name,egress,score,latency,samples})=>({ip,port,key,name,egress,score,latency,samples})),changed:false,verified:false};
+  outcome.poolInfo=poolInfo;
+  outcome.candidateSources=entries.reduce((counts,e)=>{counts[e.candidateSource]=(counts[e.candidateSource]||0)+1;return counts;},{});
   async function verify(cfg,expected) {
     const a=await raw(cfg);
     const b=parseSurge(await req('GET','/sub?token='+cfg.token+'&surge'),cfg,pools);
@@ -274,9 +293,9 @@ async function renameOnly(env,opts,pools) {
     assert(env.now()-startedAt<10*60*1000,'改名操作已超时，请重新运行');assert(!await env.cancelled(runId),'已取消，未改名');
     const currentNetwork=env.networkKey();assert(!initialNetwork||!currentNetwork||initialNetwork===currentNetwork,'检测到网络变化，保留原名称');
   }
-  async function snapshot() {
+  async function snapshot(first=false) {
     const cfg=configGuard(await req('GET','/admin/config.json'),opts.host);
-    const list=await req('GET','/admin/ADD.txt'),entries=parseList(list,pools);
+    const list=await req('GET','/admin/ADD.txt');if(first)pools=includeCurrent(list,pools);const entries=parseList(list,pools);
     assert(entries.length===10&&new Set(entries.map(e=>e.ip)).size===10,'现有列表不是 10 个不同 IP，保留原列表');
     return {cfg,list,entries};
   }
@@ -286,7 +305,7 @@ async function renameOnly(env,opts,pools) {
     return sameNamedEntries(raw,expected)&&sameNamedEntries(surge,expected);
   }
   await env.login(opts.host,opts.password);
-  const baseline=await snapshot();
+  const baseline=await snapshot(true);
   assert(await subscriptions(baseline.cfg,baseline.entries),'后台与实际订阅尚未一致，暂不改名');
   await env.backup({host:opts.host,list:baseline.list,entries:baseline.entries,createdAt:startedAt});
   const selected=await exitNames(env,baseline.entries,baseline.cfg,guard,
@@ -321,6 +340,6 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,execute,renameOnly};
+const api={MODES,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,topDistinct,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);

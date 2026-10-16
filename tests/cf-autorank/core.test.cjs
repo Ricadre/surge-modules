@@ -4,6 +4,8 @@ const HOST='example.net',PASS='11111111-1111-4111-8111-111111111111';
 function config(){return {HOST,HOSTS:[HOST],UUID:PASS,PATH:'/',协议类型:'trojan',传输协议:'ws',跳过证书验证:false,随机路径:false,启用0RTT:false,ECH:false,优选订阅生成:{local:true,本地IP库:{随机IP:false},TOKEN:'f'.repeat(32)}};}
 function fixture(options={}) {
  let list=Array.from({length:options.count||10},(_,i)=>`8.35.211.${i+1}:2053#${options.alreadyNamed?`【🇺🇸】 CF${i+1}-8.35.211.${i+1}`:`CF-YouTube-${String(i+1).padStart(2,'0')}`}`).join('\n');
+ if(options.outsideCurrent)list=list.replace('8.35.211.1:2053','9.9.9.9:443');
+ const allowedPools=C.includeCurrent(list,pools.concat(options.official||[]));
  const original=list,posts=[],calls=[],progress=[],geoCalls=[];let probes=0,time=1000000,snapshots=0,seed=42,id=0;
  const cfg=config();
  const env={
@@ -16,10 +18,10 @@ function fixture(options={}) {
   login:async()=>{if(options.loginFail)throw new Error('登录失败');},
   control:async(method,path,body)=>{
    calls.push([method,path]);
-   if(method==='POST'){assert.equal(path,'/admin/ADD.txt');assert.equal(C.parseList(body,pools).length,10);posts.push(body);list=body;return {success:true};}
+   if(method==='POST'){assert.equal(path,'/admin/ADD.txt');assert.equal(C.parseList(body,allowedPools).length,10);posts.push(body);list=body;return {success:true};}
    if(path==='/admin/config.json'){snapshots++;if(options.userChange&&snapshots===2)list=original.replace('8.35.211.1:','8.35.211.250:');if(options.wrongMode)cfg.优选订阅生成.local=false;return structuredClone(cfg);}
    if(path==='/admin/ADD.txt')return list;
-   const entries=C.parseList(list,pools);
+   const entries=C.parseList(list,allowedPools);
    if(path.endsWith('&b64'))return Buffer.from(entries.map(e=>`trojan://${PASS}@${e.key}?security=tls&type=ws&host=${HOST}&sni=${HOST}&path=%2F#${encodeURIComponent(options.rawNameFail&&posts.length===1?'Old name':e.name)}`).join('\n')).toString('base64');
    if(path.endsWith('&surge'))return '[Proxy]\n'+entries.map((e,i)=>`${options.surgeNameFail&&posts.length===1?'Old name':convertedName(e.name)} = trojan, ${options.verifyFail&&posts.length===1?'8.35.211.253':e.ip}, ${e.port}, password=${PASS}, sni=${HOST}, ws=true, ws-path=/, ws-headers=Host:${HOST}, skip-cert-verify=false`).join('\n');
    throw new Error('Unknown path');
@@ -86,6 +88,23 @@ test('full ranking and rename survive leading-emoji removal with exact names in 
   const surge=C.parseSurge(await f.env.control('GET','/sub?mock&surge'),cfg,pools);
   assert(C.sameNamedEntries(r.selected,raw));assert(C.sameNamedEntries(r.selected,surge));
  }
+});
+test('expanded full ranking verifies new ranges and preserves old out-of-pool entries in its baseline',async()=>{
+ const official=require('../../src/cf-autorank/official-pools.json');
+ const f=fixture({official,outsideCurrent:true});
+ const r=await C.execute(f.env,f.opts,pools,{official,source:'live-text'});
+ assert(r.verified&&r.changed);assert.equal(r.candidateSources.current,10);assert.equal(f.posts.length,1);
+ assert(r.selected.some(e=>!C.inPools(e.ip,pools)));
+});
+test('expanded publication failure restores the exact old list including out-of-pool current entries',async()=>{
+ const official=require('../../src/cf-autorank/official-pools.json');
+ const f=fixture({official,outsideCurrent:true,surgeNameFail:true});
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools,{official,source:'live-text'}),/恢复备份/);
+ assert.equal(f.posts.length,2);assert.equal(f.getList(),f.original);
+});
+test('rename accepts an existing public endpoint outside bundled ranges without changing its address',async()=>{
+ const f=fixture({outsideCurrent:true}),r=await C.renameOnly(f.env,f.opts,pools);
+ assert(r.verified);assert.equal(r.selected[0].key,'9.9.9.9:443');assert.equal(f.posts.length,1);
 });
 for(const [name,options,pattern] of [
  ['wrong mode',{wrongMode:true},/自定义模式/],['login failure',{loginFail:true},/登录失败/],
