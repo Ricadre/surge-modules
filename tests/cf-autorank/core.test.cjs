@@ -47,7 +47,10 @@ test('Premium filtering skips faster unavailable nodes and ranks passing nodes b
  };
  const r=await C.execute(f.env,f.opts,pools);
  assert(r.verified);assert.equal(r.premium.preflight.unavailable,3);assert.equal(r.premium.tested,24);assert.equal(r.premium.verified,10);
- assert.equal(r.downloadTestedCount,37);assert.equal(r.premium.preflight.skippedDownloads,3);
+ // Premium is checked in screen-rank order: the three fastest screened entries
+ // fail, the next 24 become finalists, and lower ranks are never probed.
+ assert.equal(r.downloadTestedCount,40);assert.equal(r.premium.preflight.tested,27);assert.equal(r.premium.preflight.notNeeded,13);
+ assert.equal(seen.length,27);
  assert(r.selected.every(e=>!seen.slice(0,3).some(d=>d.startsWith('CF-Probe-'+e.ip+'-'))));
  assert(r.selected.every((e,i)=>i===0||r.selected[i-1].score>=e.score));
  assert(r.selected.every(e=>e.premium.samples.length===3));assert.equal(f.posts.length,1);
@@ -67,7 +70,7 @@ test('only nine Premium-capable nodes never publish or fill with unqualified ent
 // Synthetic scenario: seven of the first 24 pass; later candidates are reserves.
 function reserveFixture(options={}) {
  const f=fixture(),probe=f.env.probe,progress=f.env.progress,now=f.env.now;
- const seen=[],downloads=[],events=[];let stage='',elapsed=0;
+ const seen=[],downloads=[],events=[],firstCounts=new Map();let stage='',elapsed=0;
  f.opts.limit=options.limit||40;f.opts.mode=options.mode||'lite';
  f.env.now=()=>now()+elapsed;
  f.env.progress=async p=>{
@@ -79,9 +82,10 @@ function reserveFixture(options={}) {
   const response=await probe(spec),d=spec.descriptor;
   if(spec.url.startsWith('https://www.youtube.com/premium?')) {
    events.push({kind:'premium',descriptor:d,stage});
-   // All candidates pass the new early single check. This fixture exercises
+   // Every entry passes its first Premium sample. This fixture exercises
    // later qualification loss and reserve replacement, not early rejection.
-   if(stage==='下载前 Premium 首检')return response;
+   const ordinal=(firstCounts.get(d)||0)+1;firstCounts.set(d,ordinal);
+   if(ordinal===1)return response;
    if(!seen.includes(d))seen.push(d);
    const i=seen.indexOf(d);
    if((i>=7&&i<24)||i===24&&options.rejectFirstReserve||stage==='出口与 Premium 最终复核'&&i<7&&options.refreshFailure)
@@ -122,6 +126,7 @@ test('seven initial qualifiers are filled from reserves then sorted by full rete
 test('reserve Premium failures cost no full downloads and failed full retests cannot fill slots',async()=>{
  const f=reserveFixture({rejectFirstReserve:true,rejectSecondRefine:true}),r=await C.execute(f.env,f.opts,pools);
  assert(r.verified);assert.equal(r.supplement.examined,5);assert.equal(r.supplement.refined,4);
+ assert.equal(r.premium.preflight.reserveTested,5);assert.equal(r.premium.preflight.notNeeded,11);
  assert.equal(r.supplement.added,3);assert.equal(r.supplement.failedRefine,1);
  assert(!f.downloads.some(d=>d.descriptor===f.seen[24]));
  assert(r.selected.every(e=>![24,25].some(i=>f.seen[i].startsWith('CF-Probe-'+e.ip+'-'))));
@@ -137,6 +142,7 @@ test('reserve retesting stops at 24 extra candidates instead of consuming unboun
 test('a long reserve pass refreshes old Premium pairs without weakening the final age rule',async()=>{
  const f=reserveFixture({delayed:true}),r=await C.execute(f.env,f.opts,pools);
  assert(r.verified);assert.equal(r.premium.refreshed,7);assert.equal(r.premium.verified,10);
+ assert.equal(r.premium.preflight.reserveTested,3);assert.equal(r.premium.preflight.notNeeded,13);
  const P=require('../../src/cf-autorank/youtube-premium.js');
  assert(r.selected.every(e=>P.qualified(e.premium,f.env.now())));
  assert.equal(f.events.filter(e=>e.stage==='出口与 Premium 最终复核').length,24);

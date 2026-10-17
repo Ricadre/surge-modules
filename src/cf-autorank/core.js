@@ -232,6 +232,48 @@ async function pool(items,n,fn) {
   }));
   if(failed)throw failure;
 }
+// Ordered admission without batch barriers. Items are dispatched in order to
+// at most `width` workers; an item starts only while accepted + undecided <
+// needed, so every accepted item is among the first `needed` acceptances in
+// order and nothing beyond them is examined. An accepted item continues with
+// `rest` in the same worker, keeping each item's requests sequential.
+async function rankedPipeline(items,width,needed,first,rest=async()=>{}) {
+  let cursor=0,pending=0,accepted=0,failed=false,failure=null;const waiting=[];
+  const wake=()=>{while(waiting.length)waiting.shift()();};
+  const fail=error=>{if(!failed){failed=true;failure=error||new Error('并发请求处理异常');}wake();};
+  async function worker() {
+    while(!failed&&cursor<items.length) {
+      if(accepted+pending>=needed){if(!pending)return;await new Promise(resolve=>waiting.push(resolve));continue;}
+      const index=cursor++;pending++;let value=null;
+      try{value=await first(items[index],index);}catch(error){fail(error);}
+      finally{pending--;if(value&&!failed)accepted++;wake();}
+      if(failed)return;
+      if(value){try{await rest(items[index],index,value);}catch(error){fail(error);return;}}
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(width,items.length)},worker));
+  if(failed)throw failure;
+  return accepted;
+}
+// Like pool(), but an item starts only while gate(item, active) allows it.
+// A closed gate waits for an in-flight item to finish and re-checks; with
+// nothing in flight it ends the pool. There is no batch barrier.
+async function gatedPool(items,width,gate,fn) {
+  let cursor=0,active=0,failed=false,failure=null;const waiting=[];
+  const wake=()=>{while(waiting.length)waiting.shift()();};
+  async function worker() {
+    while(!failed&&cursor<items.length) {
+      let open=false;
+      try{open=gate(items[cursor],active);}catch(error){if(!failed){failed=true;failure=error;}wake();return;}
+      if(!open){if(!active)return;await new Promise(resolve=>waiting.push(resolve));continue;}
+      const index=cursor++;active++;
+      try{await fn(items[index],index);}catch(error){if(!failed){failed=true;failure=error||new Error('并发请求处理异常');}}
+      finally{active--;wake();}
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(width,items.length)},worker));
+  if(failed)throw failure;
+}
 function median(list){const s=list.slice().sort((a,b)=>a-b);if(!s.length)return null;const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 function topDistinct(rows,count) { const sorted=rows.filter(x=>x.valid).slice().sort((a,b)=>b.score-a.score||(a.latency||0)-(b.latency||0)); const seen=new Set();return sorted.filter(x=>{if(seen.has(x.ip))return false;seen.add(x.ip);return true;}).slice(0,count); }
 // Light screening coverage is independent of the configurable download cap.
@@ -311,7 +353,9 @@ async function selectiveLightScreen(entries,current,limit,options,probe,report=a
     backoffs:0,rechecked:0,batches:[],allocation:{current:0,latency:0,exploration:0}};
   const firstIPs=new Map(),secondIPs=new Map();
   function adjust(map,ip,delta) {const count=(map.get(ip)||0)+delta;if(count)map.set(ip,count);else map.delete(ip);}
+  let sampleVersion=0;
   function storeSample(state,field,sample) {
+    sampleVersion++;
     const oldFirst=lightValid(state.first),oldSecond=oldFirst&&lightValid(state.second);
     // null marks an attempted but unknown result; undefined means untested.
     state[field]=sample===undefined?null:sample;
@@ -323,32 +367,100 @@ async function selectiveLightScreen(entries,current,limit,options,probe,report=a
   async function emit(phase,done,total,concurrency,rechecking=false) {
     await report({phase,done,total,concurrency,rechecking,stats});
   }
-  let width=options.concurrency,baseline=null,cooldown=0;
-  for(let offset=0;offset<states.length;offset+=options.batchSize) {
-    const batch=states.slice(offset,offset+options.batchSize);
-    async function measure(n,rechecking) {
-      let done=0;stats.maxConcurrency=Math.max(stats.maxConcurrency,n);stats.firstConcurrency=n;
-      if(rechecking)batch.forEach(s=>{storeSample(s,'first',null);});
-      await pool(batch,n,async state=>{
-        stats.firstRequests++;storeSample(state,'first',await probe(state.entry,1));done++;
-        if(!rechecking)stats.firstTested=offset+done;
-        await emit(rechecking?'first-recheck':'first',rechecking?done:offset+done,rechecking?batch.length:states.length,n,rechecking);
-      });
-      const good=batch.filter(s=>lightValid(s.first));
-      return {good:good.length,failed:1-good.length/batch.length,latency:median(good.map(s=>s.first.ms))};
-    }
-    let sample=await measure(width,false);
-    const elevated=width>options.concurrency&&baseline&&(
+  // First pass without batch barriers. Batches keep their own width and are
+  // still evaluated one by one, but when a batch is down to its slow tail the
+  // idle slots start the next batch. Every request starts only while the total
+  // in flight is below the width of each batch that still has requests out, so
+  // no entry is measured above its own batch's width. The next batch's width is
+  // raised once the previous batch has been judged healthy. If a batch at a
+  // raised width degrades, every request drains, results already taken for
+  // the next batch are discarded, and the degraded batch is measured again
+  // alone at the base width, exactly as before.
+  const base=options.concurrency,batches=[];
+  for(let offset=0;offset<states.length;offset+=options.batchSize)
+    batches.push({index:batches.length,offset,states:states.slice(offset,offset+options.batchSize),width:null,next:0,inflight:0,completed:0});
+  let planned=base,baseline=null,cooldown=0,evaluated=-1,dispatching=0,inflight=0,failure=null,completedFirst=0;
+  const waiters=[],wake=()=>{while(waiters.length)waiters.shift()();},nextEvent=()=>new Promise(resolve=>waiters.push(resolve));
+  function summarize(batch) {
+    const good=batch.filter(s=>lightValid(s.first));
+    return {good:good.length,failed:1-good.length/batch.length,latency:median(good.map(s=>s.first.ms))};
+  }
+  function capacity(batch) {
+    let cap=batch.width;
+    for(let i=Math.max(0,evaluated+1);i<=dispatching&&i<batches.length;i++)if(batches[i].inflight>0)cap=Math.min(cap,batches[i].width);
+    return cap;
+  }
+  function launch(batch,state) {
+    inflight++;batch.inflight++;stats.maxConcurrency=Math.max(stats.maxConcurrency,inflight);
+    (async()=>{
+      try {
+        stats.firstRequests++;storeSample(state,'first',await probe(state.entry,1));
+        stats.firstTested=++completedFirst;
+        await emit('first',completedFirst,states.length,batch.width);
+      } catch(error) {if(!failure)failure=error||new Error('并发请求处理异常');}
+      finally {inflight--;batch.inflight--;batch.completed++;wake();}
+    })();
+  }
+  async function drain() {while(inflight)await nextEvent();}
+  async function evaluate(batch) {
+    let sample=summarize(batch.states);
+    const elevated=batch.width>base&&baseline&&(
       sample.failed>baseline.failed+0.20||sample.latency!==null&&baseline.latency!==null&&
       sample.latency>Math.max(baseline.latency*1.6,baseline.latency+150));
-    stats.batches.push({offset,count:batch.length,concurrency:width,...sample,rechecked:!!elevated});
+    stats.batches.push({offset:batch.offset,count:batch.states.length,concurrency:batch.width,...sample,rechecked:!!elevated});
+    stats.firstConcurrency=batch.width;
     if(elevated) {
-      stats.backoffs++;stats.rechecked+=batch.length;width=options.concurrency;cooldown=2;
-      sample=await measure(width,true);stats.batches.push({offset,count:batch.length,concurrency:width,...sample,recovery:true});
-      await emit('first',offset+batch.length,states.length,width);
+      stats.backoffs++;stats.rechecked+=batch.states.length;planned=base;cooldown=2;
+      await drain();if(failure)return;
+      const ahead=batches[batch.index+1];
+      if(ahead&&ahead.width!==null) {
+        // Results taken at the raised width while this batch degraded are not kept.
+        for(const state of ahead.states.slice(0,ahead.next))storeSample(state,'first',null);
+        completedFirst-=ahead.completed;stats.firstTested=completedFirst;stats.discardedAhead=(stats.discardedAhead||0)+ahead.completed;
+        Object.assign(ahead,{width:null,next:0,inflight:0,completed:0});
+      }
+      dispatching=batch.index+1;
+      let done=0;stats.firstConcurrency=base;
+      batch.states.forEach(state=>storeSample(state,'first',null));
+      await pool(batch.states,base,async state=>{
+        stats.firstRequests++;storeSample(state,'first',await probe(state.entry,1));done++;
+        await emit('first-recheck',done,batch.states.length,base,true);
+      });
+      sample=summarize(batch.states);
+      stats.batches.push({offset:batch.offset,count:batch.states.length,concurrency:base,...sample,recovery:true});
+      await emit('first',completedFirst,states.length,base);
+      baseline=sample;
+    } else if(batch.width===base)baseline=sample;
+    if(cooldown>0)cooldown--;else if(stats.backoffs<2&&sample.good>=8)planned=Math.min(options.maxConcurrency,(elevated?base:batch.width)+4);
+    const ahead=batches[batch.index+1];
+    if(ahead&&ahead.width!==null)ahead.width=Math.max(ahead.width,planned);
+  }
+  for(;;) {
+    if(failure){await drain();throw failure;}
+    let progressed=false;
+    while(evaluated+1<batches.length) {
+      const batch=batches[evaluated+1];
+      if(batch.width===null||batch.next<batch.states.length||batch.inflight>0)break;
+      await evaluate(batch);evaluated++;progressed=true;
+      if(failure){await drain();throw failure;}
     }
-    if(width===options.concurrency)baseline=sample;
-    if(cooldown>0)cooldown--;else if(stats.backoffs<2&&sample.good>=8)width=Math.min(options.maxConcurrency,width+4);
+    if(evaluated===batches.length-1)break;
+    let started=false;
+    while(dispatching<batches.length) {
+      const batch=batches[dispatching];
+      if(batch.width===null) {
+        // At most one batch is started ahead of the oldest unevaluated batch.
+        if(dispatching>evaluated+2||dispatching>0&&batches[dispatching-1].next<batches[dispatching-1].states.length)break;
+        batch.width=planned;
+      }
+      if(batch.next>=batch.states.length){dispatching++;continue;}
+      if(inflight>=capacity(batch))break;
+      launch(batch,batch.states[batch.next++]);started=true;
+    }
+    if(!started&&!progressed) {
+      if(!inflight)throw new Error('轻量初筛调度异常');
+      await nextEvent();
+    }
   }
   // Reuse only the final concurrency that actually completed the first pass.
   // The selectively measured second-pass sample must not set a new baseline.
@@ -360,12 +472,13 @@ async function selectiveLightScreen(entries,current,limit,options,probe,report=a
     return group.states.filter(s=>lightValid(s.first)&&lightValid(s.second)&&(!onlyCurrent||currentKeys.has(s.entry.key)))
       .map(row).sort(compare)[0];
   }
+  async function secondSample(state,phase) {
+    stats.secondRequests++;storeSample(state,'second',await probe(state.entry,2));stats.secondTested++;
+    await emit(phase,stats.secondTested,firstPassed.length,stats.secondConcurrency);
+  }
   async function seconds(pending,phase) {
     const todo=pending.filter(s=>lightValid(s.first)&&s.second===undefined);
-    await pool(todo,stats.secondConcurrency,async state=>{
-      stats.secondRequests++;storeSample(state,'second',await probe(state.entry,2));stats.secondTested++;
-      await emit(phase,stats.secondTested,firstPassed.length,stats.secondConcurrency);
-    });
+    await pool(todo,stats.secondConcurrency,state=>secondSample(state,phase));
   }
   await emit('second-current',0,firstPassed.length,stats.secondConcurrency);
   await seconds(firstPassed.filter(s=>currentKeys.has(s.entry.key)),'second-current');
@@ -377,27 +490,29 @@ async function selectiveLightScreen(entries,current,limit,options,probe,report=a
   if(available>0) {
     const pending=otherGroups.flatMap(g=>g.states).filter(s=>lightValid(s.first)&&s.second===undefined)
       .sort((a,b)=>a.first.ms-b.first.ms||a.entry.key.localeCompare(b.entry.key));
-    let offset=0;
-    while(offset<pending.length) {
-      const known=knownOthers(),cutoff=known.length>=fast?known[fast-1].lightLatency:Infinity;
-      // max(first, second) cannot be smaller than first. Equality must still be
-      // measured because the original key tie-break can change the shortlist.
-      if(pending[offset].first.ms>cutoff)break;
-      const batch=[];
-      while(offset<pending.length&&batch.length<stats.secondConcurrency&&pending[offset].first.ms<=cutoff)batch.push(pending[offset++]);
-      await seconds(batch,'second-latency');
-    }
+    // No batch barrier: each start re-reads the cutoff from every result
+    // completed so far. Adding results can only lower the fast-th latency, and
+    // max(first, second) cannot be smaller than first, so an entry whose first
+    // latency is strictly above the cutoff is never in the shortlist. Equality
+    // is still measured because the key tie-break can change the shortlist.
+    let cachedVersion=-1,cachedCutoff=Infinity;
+    const cutoff=()=>{
+      if(cachedVersion!==sampleVersion){const known=knownOthers();cachedCutoff=known.length>=fast?known[fast-1].lightLatency:Infinity;cachedVersion=sampleVersion;}
+      return cachedCutoff;
+    };
+    await gatedPool(pending,stats.secondConcurrency,state=>state.first.ms<=cutoff(),state=>secondSample(state,'second-latency'));
     const quick=knownOthers().slice(0,fast),quickIPs=new Set(quick.map(e=>e.ip));
     const otherIPs=new Set(otherGroups.map(g=>g.ip));
     const randomGroups=explorationOrder.filter(g=>otherIPs.has(g.ip)&&!quickIPs.has(g.ip));
-    let cursor=0,found=0;
-    while(cursor<randomGroups.length&&found<explore) {
-      // Drain each bounded batch before selecting another. For a chosen IP,
-      // inspect all remaining ports so its best valid endpoint is retained.
-      const batch=randomGroups.slice(cursor,cursor+Math.min(stats.secondConcurrency,explore-found));cursor+=batch.length;
-      await seconds(batch.flatMap(g=>g.states),'second-exploration');
-      found+=batch.filter(g=>best(g)).length;
-    }
+    // Groups start in exploration order only while found + in-flight groups
+    // remain below the quota, so the first qualifying groups in that order are
+    // all measured and no group beyond a possible need is started. For a
+    // chosen IP, every remaining port is inspected so its best endpoint stays.
+    let found=0;
+    await gatedPool(randomGroups,stats.secondConcurrency,(g,active)=>found+active<explore,async g=>{
+      for(const state of g.states)if(lightValid(state.first)&&state.second===undefined)await secondSample(state,'second-exploration');
+      if(best(g))found++;
+    });
     if(knownOthers().length<available) {
       // If fewer than the requested number can qualify, finish the remaining
       // first-pass candidates before recomputing both quotas from actual supply.
@@ -463,25 +578,13 @@ async function execute(env,opts,pools,poolInfo=null) {
   assert(downloadEntries.length>=10,'有效下载候选不足 10 个，保留原订阅');
   progress.downloadCandidateCount=downloadEntries.length;
   progress.premium={tested:0,eligible:0,passed:0,unavailable:0,unknown:0,inconsistent:0,verified:0,refreshed:0,recoveryAttempts:0,recovered:0,bytes:0,
-    preflight:{total:downloadEntries.length,tested:0,passed:0,unavailable:0,unknown:0,skippedDownloads:0,reused:0,refreshed:0}};
+    preflight:{total:0,tested:0,passed:0,unavailable:0,unknown:0,reserveTested:0,notNeeded:0,skippedDownloads:0,reused:0,refreshed:0,ranked:true}};
   progress.premiumFinalFailures=[];
-  // Each download candidate must establish Premium availability before even
-  // the small Range download. Keep one sample; finalists complete the pair
-  // before full downloads, then still need the final publication check.
-  const preflight=new Array(downloadEntries.length);
-  await update('下载前 Premium 首检',0,downloadEntries.length);
-  await pool(downloadEntries,4,async(e,index)=>{
-    const sample=await premiumProbe(e),stats=progress.premium.preflight;
-    stats.tested++;
-    if(sample.status==='available'){
-      stats.passed++;preflight[index]={...e,premiumInitial:sample};
-    } else {
-      stats[sample.status==='unavailable'?'unavailable':'unknown']++;stats.skippedDownloads++;
-    }
-    await update('下载前 Premium 首检',stats.tested,downloadEntries.length);
-  });
-  const premiumEntries=preflight.filter(Boolean);
-  assert(premiumEntries.length>=10,'Premium 首检合格 '+premiumEntries.length+'/10，不足 10 个，未开始下载测速，保留原订阅');
+  // A Premium landing page is far larger than a 128 KiB screen sample, so the
+  // small screen runs first and Premium is checked in screen-rank order only
+  // as deep as needed. Finalists are still exactly the top-ranked screened
+  // entries whose first Premium sample is available.
+  const premiumEntries=downloadEntries;
   progress.downloadTestedCount=premiumEntries.length;
   const downloadStats=()=>({samples:0,valid:0,partial:0,requests:0,emptyTimeouts:0,failures:{},http:{}});
   progress.downloadDiagnostics={screen:downloadStats(),retest:downloadStats(),examples:[]};
@@ -509,8 +612,8 @@ async function execute(env,opts,pools,poolInfo=null) {
   }
   done=0;const screened=[];await update('下载初筛',0,premiumEntries.length);
   await pool(premiumEntries,3,async e=>{const d=await download(e,mode.screenBytes,5);if(d.valid)screened.push({...e,valid:true,score:d.mbps});await update('下载初筛',++done,premiumEntries.length);});
-  const finalists=topDistinct(screened,mode.finalists);
-  assert(finalists.length>=10,'有效下载候选不足 10 个，保留原订阅');
+  const ranked=topDistinct(screened,screened.length);
+  assert(ranked.length>=10,'有效下载候选不足 10 个，保留原订阅');
   const selected=[],reserveRanking=[],pending=[],rejectedIPs=new Set(),observed=new Map(),initialFinalIPs=new Set();
   progress.refinement={initialCandidates:0,firstSamples:0,secondSamples:0,skippedInvalidFirst:0,skippedByBound:0,
     reserveFirstSamples:0,reserveSecondSamples:0,reserveSkippedInvalidFirst:0,savedSecondSamples:0};
@@ -544,6 +647,13 @@ async function execute(env,opts,pools,poolInfo=null) {
       Number.isFinite(initial.checkedAt)&&initial.checkedAt<=env.now()&&env.now()-initial.checkedAt<=premium.MAX_AGE/2;
     if(initial)progress.premium.preflight[fresh?'reused':'refreshed']++;
     const samples=[fresh?initial:await premiumProbe(e)];
+    // Reserves have no earlier first sample. Count that completed observation
+    // once; later publication refreshes use reuseInitial=false and do not count.
+    if(reuseInitial&&!initial) {
+      const stats=progress.premium.preflight;
+      stats.reserveTested++;
+      stats.notNeeded=Math.max(0,stats.total-stats.tested-stats.reserveTested);
+    }
     if(samples[0].status==='available')samples.push(await premiumProbe(e));
     const available=samples.length===2&&samples.every(s=>s.status==='available')&&samples[0].region===samples[1].region&&
       (!initial||samples[0].region===initial.region);
@@ -556,22 +666,45 @@ async function execute(env,opts,pools,poolInfo=null) {
     if(result.status!=='available')progress.premium[result.status]++;
     return result;
   }
+  async function qualifyOne(e) {
+    const result=await checkCandidate(e);
+    if(result.status!=='available')return null;
+    progress.premium.eligible++;
+    return await stableOne({...e,premium:result});
+  }
   async function qualifyingBatch(rows,stage,offset=0,total=rows.length) {
     const checked=new Array(rows.length);let done=0;
     await update(stage,offset,total);
     await pool(rows,4,async(e,i)=>{
-      const result=await checkCandidate(e);
-      if(result.status==='available') {
-        progress.premium.eligible++;
-        checked[i]=await stableOne({...e,premium:result});
-      }
+      checked[i]=await qualifyOne(e);
       await update(stage,offset+(++done),total);
     });
     return checked.filter(Boolean);
   }
   // Four workers keep each node's Premium and stability requests sequential.
+  // A node is dispatched only while it could still be one of the first 24
+  // first-sample passes in screen order, so every pass is a finalist and its
+  // second sample and stability checks follow at once in the same worker.
   // The entire pool drains before any full bandwidth measurement starts.
-  const stable=(await qualifyingBatch(finalists,'Premium 与稳定性检查')).filter(e=>e.valid);
+  const preflightStats=progress.premium.preflight,firstRejected=new Set(),qualified=new Array(ranked.length),finalistFlags=new Array(ranked.length);
+  preflightStats.total=ranked.length;let qualifiedDone=0;
+  await update('Premium 与稳定性检查',0,Math.min(mode.finalists,ranked.length));
+  await rankedPipeline(ranked,4,mode.finalists,async e=>{
+    const sample=await premiumProbe(e);
+    preflightStats.tested++;
+    if(sample.status==='available'){preflightStats.passed++;return sample;}
+    preflightStats[sample.status==='unavailable'?'unavailable':'unknown']++;firstRejected.add(e.ip);
+    await update('Premium 与稳定性检查',qualifiedDone,Math.min(mode.finalists,ranked.length));
+    return null;
+  },async(e,index,sample)=>{
+    finalistFlags[index]=true;
+    qualified[index]=await qualifyOne({...e,premiumInitial:sample});
+    await update('Premium 与稳定性检查',++qualifiedDone,Math.min(mode.finalists,ranked.length));
+  });
+  preflightStats.notNeeded=ranked.length-preflightStats.tested;
+  assert(preflightStats.passed>=10,'Premium 首检合格 '+preflightStats.passed+'/10，不足 10 个，保留原订阅');
+  const finalists=ranked.filter((e,i)=>finalistFlags[i]);
+  const stable=qualified.filter(Boolean).filter(e=>e.valid);
   progress.refinement.initialCandidates=stable.length;
   const first=[],ranking=new Array(stable.length);done=0;await update('下载复测首轮',0,stable.length);
   for(let index=0;index<stable.length;index++) {
@@ -602,7 +735,9 @@ async function execute(env,opts,pools,poolInfo=null) {
   }
   selected.push(...topDistinct(ranking.filter(Boolean),10));
   const finalistIPs=new Set(finalists.map(e=>e.ip));
-  const reserves=topDistinct(screened,screened.length).filter(e=>!finalistIPs.has(e.ip));
+  // Unchecked lower ranks stay available; a confirmed first-sample failure
+  // is excluded exactly as the former pre-download check excluded it.
+  const reserves=ranked.filter(e=>!finalistIPs.has(e.ip)&&!firstRejected.has(e.ip));
   progress.supplement={available:reserves.length,examined:0,eligible:0,refined:0,added:0,failedRefine:0,limit:mode.reserveFinalists,limited:false};
   let nextReserve=0;
   function selectRanking() {
@@ -870,6 +1005,6 @@ async function renameOnly(env,opts,pools) {
     throw new Error('改名验证失败；'+rollback);
   }
 }
-const api={MODES,LIGHT_SCREEN,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,chunkedDownload,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
+const api={MODES,LIGHT_SCREEN,rankedPipeline,gatedPool,settings,ipNumber,numberIP,inPools,endpoint,parseList,includeCurrent,base64Decode,configGuard,parseRaw,parseSurge,sameEntries,sameNamedEntries,namedEntries,countryFlag,publicIPv4,exitCountry,candidates,descriptor,downloadValid,chunkedDownload,topDistinct,scanCount,lightValid,adaptiveLightScreen,pickDownloads,selectiveLightScreen,execute,renameOnly};
 if(typeof module==='object'&&module.exports)module.exports=api;else root.CFRankCore=api;
 })(typeof globalThis==='object'?globalThis:this);

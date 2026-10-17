@@ -46,7 +46,7 @@ function mainContent(s,mode) {
     +networkText(last.network)+' · '+(last.mode==='full'?'完整':'省流')+' · '+Math.round((last.bytes+(last.premiumBytes||0))/1000000)+' MB';
 }
 function progressContent(s,now) {
-  if(!s.stage)return 'v0.1.22 已加载 · 尚未开始\n点击上方面板运行完整优选';
+  if(!s.stage)return 'v0.1.23 已加载 · 尚未开始\n点击上方面板运行完整优选';
   const premium=s.premium||s.result&&s.result.premium;
   const light=s.lightScreen||s.result&&s.result.lightScreen;
   const finalSelection=s.finalSelection||s.result&&s.result.finalSelection;
@@ -70,6 +70,7 @@ function progressContent(s,now) {
       if(s.stage==='下载初筛'&&light.selectionComplete)return stage+poolNote+'\n二检 '+light.secondTested+' 次 · 省 '+light.skippedSecond+' 次 · '+traffic;
     }
     if(s.stage==='下载前 Premium 首检')return stage+'\n合格 '+(premium&&premium.preflight&&premium.preflight.passed||0)+' 个 · 尚未下载测速 · '+traffic;
+    if(s.stage==='Premium 与稳定性检查'&&premium&&premium.preflight&&premium.preflight.ranked)return stage+'\n首检合格 '+premium.preflight.passed+'/'+premium.preflight.tested+' · 入围 '+(premium.eligible||0)+' · 正文 '+traffic;
     if(s.stage==='Premium 与稳定性检查')return stage+'\nPremium 通过 '+(premium&&premium.eligible||0)+' 个 · 正文 '+traffic;
     if(s.stage==='后备 Premium 与稳定性检查')return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 正文 '+traffic;
     if(s.stage==='下载复测决选'&&s.refinement)return stage+'\n已选 '+(premium&&premium.passed||0)+'/10 · 省复测 '+(s.refinement.savedSecondSamples||0)+' 次 · '+traffic;

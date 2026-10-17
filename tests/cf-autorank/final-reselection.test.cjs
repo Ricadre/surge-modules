@@ -57,7 +57,15 @@ function quality(r,f) {
  for(const [id,count] of f.counts)if(id.endsWith('|full'))assert(count<=2,'no full sample is redownloaded');
  const firstLight=f.events.filter(e=>e.kind==='light'&&e.ordinal===1);assert.equal(firstLight.length,1280);
  assert.equal(f.events.filter(e=>e.kind==='screen').length,160);
- assert.equal(f.events.filter(e=>e.kind==='premium'&&e.ordinal===1).length,160);
+ // Premium starts in screen-rank order and goes only as deep as needed, yet
+ // every full download still follows two Premium samples for that entry.
+ const initialPremium=f.events.filter(e=>e.kind==='premium'&&e.ordinal===1&&e.stage==='Premium 与稳定性检查');
+ assert.deepEqual(initialPremium.map(e=>e.rank),initialPremium.map((e,i)=>i));
+ assert(initialPremium.length>=24&&f.events.filter(e=>e.kind==='premium'&&e.ordinal===1).length<=160);
+ for(const key of new Set(f.events.filter(e=>e.kind==='full').map(e=>e.key))) {
+  const firstFull=f.events.find(e=>e.key===key&&e.kind==='full');
+  assert(f.events.filter(e=>e.key===key&&e.kind==='premium'&&e.finishedAt<=firstFull.startedAt).length>=2);
+ }
  for(const issue of r.premiumFinalFailures.filter(e=>e.discarded))assert(!r.selected.some(e=>e.key===issue.endpoint));
 }
 
@@ -104,6 +112,9 @@ test('more failures than the initial 24 can cover use only the shared reserve bu
  const f=scenario({denied:new Set(Array.from({length:18},(_,i)=>i))}),r=await C.execute(f.env,f.opts,pools);quality(r,f);
  assert.deepEqual(selectedRanks(r,f),[18,19,20,21,22,23,24,25,26,27]);
  assert.equal(r.supplement.refined,4);assert.equal(r.supplement.added,4);
+ assert.equal(r.premium.preflight.tested,24);assert.equal(r.premium.preflight.reserveTested,4);
+ assert.equal(r.premium.preflight.notNeeded,132);
+ assert.equal(new Set(f.events.filter(e=>e.kind==='premium').map(e=>e.key)).size,28);
  assert.equal(r.finalSelection.rejected,18);assert.equal(r.finalSelection.replacements,10);
  assert.equal(r.refinement.secondSamples,24);assert.equal(r.refinement.savedSecondSamples,0);
 });

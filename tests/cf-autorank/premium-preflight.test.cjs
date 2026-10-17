@@ -12,7 +12,6 @@ function scenario(options={}) {
  f.env.networkKey=()=>options.stop==='network'&&stopped?'new-network':'original-network';
  f.env.progress=async p=>{
   stage=p.stage;
-  if(options.oldInitial&&stage==='下载初筛'&&!elapsed)elapsed=6*60*1000;
   await progress(p);
  };
  f.env.probe=async spec=>{
@@ -32,6 +31,7 @@ function scenario(options={}) {
   const event={key,kind,ordinal,index,size,stage,startedAt:f.env.now()};events.push(event);
   try{
    await Promise.resolve();const result=await probe(spec);
+   if(kind==='screen')event.mbps=result.bytes*8/result.ms/1000;
    if(kind!=='premium')return result;
    if(options.stop&&ordinal===1)stopped=true;
    const changed=options.reply&&options.reply({index,ordinal,stage});
@@ -43,6 +43,10 @@ function scenario(options={}) {
  return {...f,events,counts,indices,metrics:()=>({active,premiumActive,peakPremium})};
 }
 const blocked={data:premiumPage({unavailable:true})};
+const lastScreen=f=>Math.max(...f.events.filter(e=>e.kind==='screen').map(e=>e.finishedAt));
+// Screen rank: higher small-download speed first. Indices count first Premium
+// samples, so index i is the i-th entry Premium reached in that order.
+function rankedKeys(f){return f.events.filter(e=>e.kind==='premium'&&e.ordinal===1).map(e=>e.key);}
 function assertFinalQuality(result,f){
  assert(result.verified);assert.equal(result.candidateCount,1280);assert.equal(result.downloadCandidateCount,160);
  assert.equal(result.selected.length,10);assert.equal(new Set(result.selected.map(e=>e.ip)).size,10);
@@ -50,7 +54,7 @@ function assertFinalQuality(result,f){
  for(const e of result.selected){
   const key=[...f.indices.keys()].find(d=>d.startsWith('CF-Probe-'+e.ip+'-'+e.port+' ='));
   const trace=f.events.filter(e=>e.key===key),screen=trace.find(e=>e.kind==='screen'),full=trace.find(e=>e.kind==='full');
-  assert(trace.some(e=>e.kind==='premium'&&e.ordinal===1&&e.finishedAt<=screen.startedAt));
+  assert(trace.some(e=>e.kind==='premium'&&e.ordinal===1&&e.startedAt>=lastScreen(f)));
   assert(trace.filter(e=>e.kind==='premium'&&e.finishedAt<=full.startedAt).length>=2);
   assert(trace.filter(e=>e.kind==='premium').at(-1).startedAt>=trace.filter(e=>e.kind==='full').at(-1).finishedAt);
  }
@@ -58,40 +62,51 @@ function assertFinalQuality(result,f){
  assert.equal(f.posts.length,1);
 }
 
-test('all 160 receive Premium before any download, and fresh first samples complete pairs without a redundant probe',async()=>{
+test('all 160 are screened first, then Premium runs in screen-rank order only until 24 finalists exist',async()=>{
  const f=scenario(),r=await C.execute(f.env,f.opts,pools);assertFinalQuality(r,f);
- const first=f.events.filter(e=>e.kind==='premium'&&e.ordinal===1),downloads=f.events.filter(e=>e.size);
- assert.equal(first.length,160);assert(Math.max(...first.map(e=>e.finishedAt))<=Math.min(...downloads.map(e=>e.startedAt)));
+ const first=f.events.filter(e=>e.kind==='premium'&&e.ordinal===1),screens=f.events.filter(e=>e.kind==='screen');
+ assert.equal(screens.length,160);assert.equal(first.length,24);
+ assert(Math.min(...first.map(e=>e.startedAt))>=lastScreen(f),'small screening finishes before any Premium page');
  assert.equal(r.downloadTestedCount,160);assert.equal(r.premium.preflight.reused,24);assert.equal(r.premium.preflight.refreshed,0);
- assert.equal(f.events.filter(e=>e.kind==='premium').length,160+24+10);
- assert.deepEqual(r.premium.preflight,{total:160,tested:160,passed:160,unavailable:0,unknown:0,skippedDownloads:0,reused:24,refreshed:0});
- assert(f.progress.some(p=>p.stage==='下载前 Premium 首检'&&p.done===160&&p.bytes===0));
+ assert.equal(f.events.filter(e=>e.kind==='premium').length,24+24+10);
+ assert.deepEqual(r.premium.preflight,{total:160,tested:24,passed:24,unavailable:0,unknown:0,reserveTested:0,notNeeded:136,skippedDownloads:0,reused:24,refreshed:0,ranked:true});
+ // Premium reached exactly the highest small-download scores: no unchecked
+ // entry screened faster than any entry that was checked.
+ const checked=new Set(first.map(e=>e.key)),score=key=>screens.find(e=>e.key===key).mbps;
+ const low=Math.min(...[...checked].map(score)),high=Math.max(...screens.filter(e=>!checked.has(e.key)).map(e=>e.mbps));
+ assert(low>=high,'ranked Premium skipped a faster screened entry');
+ assert.deepEqual(first.map(e=>score(e.key)),first.map(e=>score(e.key)).slice().sort((a,b)=>b-a));
 });
 
-test('unavailable, unknown, Lite, challenge, and transport failures get no small or large download',async()=>{
+test('unavailable, unknown, Lite, challenge, and transport failures are never retried, retested or admitted; the next ranks replace them',async()=>{
  const replies=[blocked,{data:'unknown page'},{data:premiumPage({lite:true})},{data:'before you continue to YouTube'},{error:'timeout',status:0,data:''}];
  const f=scenario({reply:({index,ordinal})=>ordinal===1&&index<5?replies[index]:null}),r=await C.execute(f.env,f.opts,pools);
- assertFinalQuality(r,f);assert.equal(r.downloadTestedCount,155);
- assert.equal(r.premium.preflight.unavailable,1);assert.equal(r.premium.preflight.unknown,4);assert.equal(r.premium.preflight.skippedDownloads,5);
- for(const [key,index] of f.indices)if(index<5){assert.equal(f.counts.get(key),1);assert(!f.events.some(e=>e.key===key&&e.size));}
+ assertFinalQuality(r,f);assert.equal(r.downloadTestedCount,160);
+ assert.equal(r.premium.preflight.unavailable,1);assert.equal(r.premium.preflight.unknown,4);
+ assert.equal(r.premium.preflight.tested,29);assert.equal(r.premium.preflight.passed,24);assert.equal(r.premium.tested,24);
+ for(const [key,index] of f.indices)if(index<5){assert.equal(f.counts.get(key),1);assert(!f.events.some(e=>e.key===key&&e.kind==='full'));assert(!r.selected.some(e=>key.startsWith('CF-Probe-'+e.ip+'-')));}
 });
 
-test('fewer than ten early qualifiers stop before any bandwidth download and preserve the backend',async()=>{
+test('fewer than ten Premium qualifiers stop before any large download and preserve the backend',async()=>{
  const f=scenario({reply:({index})=>index>=9?blocked:null});
- await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 首检合格 9\/10.*未开始下载测速/);
- assert.equal(f.indices.size,160);assert(!f.events.some(e=>e.size));assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
+ await assert.rejects(()=>C.execute(f.env,f.opts,pools),/Premium 首检合格 9\/10/);
+ assert.equal(f.indices.size,160);assert(!f.events.some(e=>e.kind==='full'));assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  assert.equal(f.progress.at(-1).premium.preflight.passed,9);assert.equal(f.metrics().active,0);
 });
 
-test('older first samples are replaced by two new same-region samples before large downloads',async()=>{
- const f=scenario({oldInitial:true}),r=await C.execute(f.env,f.opts,pools);assertFinalQuality(r,f);
- assert.equal(r.premium.preflight.reused,0);assert.equal(r.premium.preflight.refreshed,24);
- for(const e of r.selected)assert.deepEqual(e.premium.samples.map(s=>s.durationMs),[102,103,104]);
- assert.equal(f.events.filter(e=>e.kind==='premium').length,160+48+10);
+test('each finalist takes its two Premium samples back to back, so the first sample is always fresh for reuse',async()=>{
+ const f=scenario(),r=await C.execute(f.env,f.opts,pools);assertFinalQuality(r,f);
+ assert.equal(r.premium.preflight.refreshed,0);assert.equal(r.premium.preflight.reused,24);
+ for(const key of rankedKeys(f)){
+  const trace=f.events.filter(e=>e.key===key);
+  const i=trace.findIndex(e=>e.kind==='premium'&&e.ordinal===1);
+  assert.equal(trace[i+1].kind,'premium');assert.equal(trace[i+1].ordinal,2);
+  assert(trace[i+1].startedAt-trace[i].finishedAt<P.MAX_AGE/2);
+ }
 });
 
-test('a changed region during old-sample renewal cannot erase the initial region observation',async()=>{
- const f=scenario({oldInitial:true,reply:({ordinal})=>ordinal>1?{data:premiumPage({region:'JP'})}:null});
+test('a changed region between the pair is inconsistent and cannot be admitted from any rank',async()=>{
+ const f=scenario({reply:({ordinal})=>ordinal>1?{data:premiumPage({region:'JP'})}:null});
  await assert.rejects(()=>C.execute(f.env,f.opts,pools),/综合检查合格 0\/10/);
  assert(!f.events.some(e=>e.kind==='full'));assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  assert.equal(f.progress.at(-1).premium.inconsistent,160);assert.equal(f.metrics().active,0);
@@ -107,10 +122,10 @@ test('first-check success never bypasses a failed second check or the strict fin
  }
 });
 
-test('cancellation and network changes during early Premium drain requests without downloading or writing',async()=>{
+test('cancellation and network changes during early Premium drain requests without large downloads or writing',async()=>{
  for(const stop of ['cancel','network']){
   const f=scenario({stop});await assert.rejects(()=>C.execute(f.env,f.opts,pools),/取消|网络变化/);
-  assert(!f.events.some(e=>e.size));assert(f.indices.size>0&&f.indices.size<=4);
+  assert(!f.events.some(e=>e.kind==='full'));assert(f.indices.size>0&&f.indices.size<=4);
   assert.equal(f.metrics().active,0);assert.equal(f.posts.length,0);assert.equal(f.getList(),f.original);
  }
 });
